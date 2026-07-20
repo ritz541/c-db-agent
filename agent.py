@@ -339,6 +339,13 @@ def call_llm(messages: list, tools: list) -> dict:
     dict
         LLM response
     """
+    # Debug: log the last 3 messages to see what we're sending
+    for i, msg in enumerate(messages[-3:]):
+        role = msg.get("role", "unknown")
+        has_tool_calls = bool(msg.get("tool_calls"))
+        content_preview = str(msg.get("content", ""))[:50]
+        logger.debug("llm.messages_preview", index=len(messages)-3+i, role=role, has_tool_calls=has_tool_calls, content=content_preview)
+
     logger.info("llm.calling", message_count=len(messages))
     response = litellm.completion(
         model=MODEL_NAME,
@@ -408,8 +415,9 @@ def chat():
             response = call_llm(messages=messages, tools=tools)
         except Exception as e:
             logger.error("llm.call_failed", error=str(e))
+            sentry_sdk.capture_exception(e)
             print("   API Error: Check logs for details")
-            messages.pop()
+            messages.pop()  # Remove the user message that caused the failure
             continue
 
         # 3. PROCESS THE RESPONSE
@@ -460,6 +468,7 @@ def chat():
 
             except Exception as e:
                 logger.error("llm.final_response_failed", error=str(e))
+                sentry_sdk.capture_exception(e)
                 print("   Error processing tool results")
 
         else:
