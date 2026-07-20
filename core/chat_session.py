@@ -142,22 +142,41 @@ class ChatSession:
     def run(self):
         """Run the interactive chat loop."""
         
+        from rich.markdown import Markdown
+        from rich.console import Console
+        console = Console()
+        
         print("\n" + "=" * 60)
         print("  Agent ready! I have access to tools:")
         tools = self.tool_registry.list_tools()
         for tool in tools:
             print(f"    - {tool}")
         print("  Type 'exit' or 'quit' to stop.")
+        print("  Press Enter twice (blank line) or Ctrl+D to send multi-line messages.")
         print("=" * 60 + "\n")
         
         while True:
-            # Get user input
-            user_input = input("You: ").strip()
+            # ── Multi-line input ───────────────────────────────────
+            # Reads until an empty line (just Enter) or Ctrl+D
+            lines = []
+            try:
+                while True:
+                    prompt = "→ " if lines else "You: "
+                    line = input(prompt)
+                    if line.strip().lower() in ("exit", "quit"):
+                        print("Goodbye!")
+                        return
+                    if not line.strip() and not lines:
+                        # First empty line (user just pressed Enter) - skip
+                        continue
+                    if not line.strip() and lines:
+                        # Empty line after some input - end multi-line
+                        break
+                    lines.append(line.strip())
+            except (EOFError, KeyboardInterrupt):
+                pass  # Ctrl+D or Ctrl+C - send whatever was collected
             
-            if user_input.lower() in ("exit", "quit"):
-                print("Goodbye!")
-                break
-            
+            user_input = "\n".join(lines).strip()
             if not user_input:
                 continue
             
@@ -165,4 +184,6 @@ class ChatSession:
             response = self.process_user_input(user_input)
             
             if response:
-                print(f"Agent: {response}")
+                print()  # blank line before response
+                console.print(Markdown(response))
+                print()  # blank line after

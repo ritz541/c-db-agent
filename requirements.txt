@@ -17,3 +17,5 @@ tenacity>=8.0.0
 pydantic-settings>=2.0.0
 # pytest — testing framework
 pytest>=8.0.0
+# rich — markdown rendering in terminal
+rich>=15.0.0
