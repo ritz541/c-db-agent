@@ -268,42 +268,41 @@ def handle_tool_call(tool_name: str, args: dict) -> dict:
     db_conn = get_db_connection()
     try:
 
-        if tool_name == "calculate":
-            return calculate(expression=args["expression"], db_conn=db_conn)
+        with sentry_sdk.start_span(op="tool", description=tool_name) as span:
+            span.set_tag("tool.name", tool_name)
+            span.set_data("tool.args", args)
 
-        elif tool_name == "query_database":
-            return query_database(sql=args["sql"], db_conn=db_conn)
+            if tool_name == "calculate":
+                result = calculate(expression=args["expression"], db_conn=db_conn)
+            elif tool_name == "query_database":
+                result = query_database(sql=args["sql"], db_conn=db_conn)
+            elif tool_name == "store_resume":
+                result = store_resume(text=args["text"], name=args.get("name", "default"), db_conn=db_conn)
+            elif tool_name == "list_resumes":
+                result = list_resumes(db_conn=db_conn)
+            elif tool_name == "load_resume_from_pdf":
+                result = load_resume_from_pdf(
+                    pdf_path=args["pdf_path"],
+                    db_conn=db_conn,
+                    name=args.get("name", "default"),
+                )
+            elif tool_name == "draft_application":
+                result = draft_application(
+                    company=args["company"],
+                    role_title=args["role_title"],
+                    recipient_email=args["recipient_email"],
+                    job_description=args["job_description"],
+                    db_conn=db_conn,
+                )
+            elif tool_name == "list_applications":
+                result = list_applications(db_conn=db_conn, status=args.get("status"))
+            elif tool_name == "send_email":
+                result = send_email(application_id=args["application_id"], db_conn=db_conn)
+            else:
+                result = {"error": f"Unknown tool: {tool_name}"}
 
-        elif tool_name == "store_resume":
-            return store_resume(text=args["text"], name=args.get("name", "default"), db_conn=db_conn)
-
-        elif tool_name == "list_resumes":
-            return list_resumes(db_conn=db_conn)
-
-        elif tool_name == "load_resume_from_pdf":
-            return load_resume_from_pdf(
-                pdf_path=args["pdf_path"],
-                db_conn=db_conn,
-                name=args.get("name", "default"),
-            )
-
-        elif tool_name == "draft_application":
-            return draft_application(
-                company=args["company"],
-                role_title=args["role_title"],
-                recipient_email=args["recipient_email"],
-                job_description=args["job_description"],
-                db_conn=db_conn,
-            )
-
-        elif tool_name == "list_applications":
-            return list_applications(db_conn=db_conn, status=args.get("status"))
-
-        elif tool_name == "send_email":
-            return send_email(application_id=args["application_id"], db_conn=db_conn)
-
-        else:
-            return {"error": f"Unknown tool: {tool_name}"}
+            span.set_data("tool.result", result)
+            return result
 
     finally:
         # Return the connection to the pool
