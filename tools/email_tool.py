@@ -171,14 +171,13 @@ Company: {company}
 Job Description:
 {job_description}
 
-Write a professional, tailored email body (plain text, no markdown) that:
-1. References specific skills from the resume that match the job description
-2. Shows enthusiasm for the role and company
-3. Is concise — 3-4 short paragraphs max
-4. Includes a polite closing with name and links (GitHub: github.com/ritz541, Portfolio: chavanpatil.com)
+Write a SHORT email body (plain text, no markdown) that:
+1. Mentions 1-2 specific skills from the resume that match the job
+2. Sounds like a real person wrote it (not a template)
+3. Is 2-3 short paragraphs max
+4. Ends with: "Best regards, Ritesh Chavan" and links (GitHub: github.com/ritz541, Portfolio: chavanpatil.com)
 
-Only output the email body itself — no subject line, no greetings wrapper.
-Start directly with "Dear Hiring Manager," or similar."""
+Output only the email body. Start with "Dear Hiring Manager," or similar.""
 
         email_body = _call_llm(prompt)
 
