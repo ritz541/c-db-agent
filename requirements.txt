@@ -17,7 +17,3 @@ tenacity>=8.0.0
 pydantic-settings>=2.0.0
 # pytest — testing framework
 pytest>=8.0.0
-# fastapi — REST API for TUI backend
-fastapi>=0.115.0
-# uvicorn — ASGI server for FastAPI
-uvicorn>=0.34.0
