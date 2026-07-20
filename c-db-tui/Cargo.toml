@@ -1,7 +1,7 @@
 [package]
 name = "c-db-tui"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 ratatui = "0.28"
@@ -9,6 +9,4 @@ crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
-tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.11", features = ["json"] }
-tungstenite = "0.21"
+reqwest = { version = "0.11", default-features = false, features = ["json", "blocking", "rustls-tls"] }

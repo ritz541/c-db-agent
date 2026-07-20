@@ -5,6 +5,8 @@ Wraps the refactored c-db agent in a REST API.
 The Rust TUI communicates with this backend over HTTP.
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,14 +14,22 @@ import sys
 import os
 
 # Add parent directory to path so we can import agent modules
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.registry import registry
 from core.chat_session import ChatSession
 from core.llm_client import LLMClient
 from config import get_settings
 
-app = FastAPI(title="c-db Agent API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown lifecycle."""
+    yield
+    close_pool()
+
+
+app = FastAPI(title="c-db Agent API", version="1.0.0", lifespan=lifespan)
 
 # ── Request/Response Models ─────────────────────────────────────
 
@@ -47,6 +57,14 @@ class ToolInfo(BaseModel):
 # Load settings
 settings = get_settings()
 
+# Initialize database connection pool
+from infrastructure.db_pool import init_db_pool, close_pool
+try:
+    init_db_pool(settings.cockroachdb_url)
+    print("  ✓ Database pool initialized")
+except Exception as e:
+    print(f"  ⚠ Database pool failed (tools that need DB won't work): {e}")
+
 # Initialize LLM client
 llm_client = LLMClient(
     model=settings.llm_model,
@@ -56,11 +74,12 @@ llm_client = LLMClient(
 # Initialize tool registry
 registry.auto_discover()
 
-# Create chat session
+# Create chat session with proper system prompt
+from core.prompts import get_system_prompt
 chat_session = ChatSession(
     llm_client=llm_client,
     tool_registry=registry,
-    system_prompt="You are a helpful AI assistant."
+    system_prompt=get_system_prompt()
 )
 
 # ── API Endpoints ─────────────────────────────────────────

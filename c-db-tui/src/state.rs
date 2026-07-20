@@ -3,28 +3,17 @@
 //! This holds the conversation history, tool list, and UI state.
 
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Tool {
+    pub name: String,
+    pub description: String,
+}
 
 #[derive(Clone, Debug)]
 pub struct Message {
     pub role: String,
     pub content: String,
-    pub timestamp: String,
-    pub tool_calls: Vec<ToolCall>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ToolCall {
-    pub tool_name: String,
-    pub arguments: String,
-    pub result: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    pub parameters: String,
 }
 
 #[derive(Debug)]
@@ -33,11 +22,12 @@ pub struct App {
     pub tools: Vec<Tool>,
     pub input: String,
     pub status_msg: String,
+    pub status_timer: u8,
     pub tab: Tab,
     pub input_mode: InputMode,
     pub scroll: usize,
-    pub agent_typing: bool,
-    pub tool_executing: Option<String>,
+    pub typing_spinner: u8,
+    pub waiting_response: bool,
     pub connected: bool,
 }
 
@@ -53,7 +43,6 @@ pub enum Tab {
 pub enum InputMode {
     Normal,
     Editing,
-    Palette,
 }
 
 impl App {
@@ -63,11 +52,12 @@ impl App {
             tools: Vec::new(),
             input: String::new(),
             status_msg: String::new(),
+            status_timer: 0,
             tab: Tab::Chat,
             input_mode: InputMode::Normal,
             scroll: 0,
-            agent_typing: false,
-            tool_executing: None,
+            typing_spinner: 0,
+            waiting_response: false,
             connected: false,
         }
     }
@@ -76,15 +66,23 @@ impl App {
         self.messages.push(Message {
             role: role.to_string(),
             content: content.to_string(),
-            timestamp: "now".to_string(), // TODO: actual timestamp
-            tool_calls: Vec::new(),
         });
-        // Auto-scroll to bottom
         self.scroll = 0;
     }
 
     pub fn set_status(&mut self, msg: &str) {
         self.status_msg = msg.to_string();
+        self.status_timer = 20; // Show for ~4 seconds (20 ticks at 200ms)
+    }
+
+    pub fn tick(&mut self) {
+        self.typing_spinner = (self.typing_spinner + 1) % 10;
+        if self.status_timer > 0 {
+            self.status_timer -= 1;
+            if self.status_timer == 0 {
+                self.status_msg.clear();
+            }
+        }
     }
 
     pub fn next_tab(&mut self) {
@@ -103,21 +101,5 @@ impl App {
             Tab::History => Tab::Tools,
             Tab::Config => Tab::History,
         };
-    }
-
-    pub fn scroll_up(&mut self) {
-        if self.scroll > 0 {
-            self.scroll -= 1;
-        }
-    }
-
-    pub fn scroll_down(&mut self) {
-        if self.scroll < self.messages.len().saturating_sub(1) {
-            self.scroll += 1;
-        }
-    }
-
-    pub fn jump_to_bottom(&mut self) {
-        self.scroll = 0;
     }
 }

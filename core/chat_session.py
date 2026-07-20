@@ -134,8 +134,10 @@ class ChatSession:
                 except Exception as e:
                     logger.error("llm.tool_response_failed", error=str(e))
                     sentry_sdk.capture_exception(e)
-                    print("   Error processing tool results")
-                    break
+                    # Remove the assistant message with tool_calls and tool responses
+                    # to keep message history clean
+                    self.messages.pop()  # Remove last tool response
+                    return f"Sorry, there was an error processing the tool results. Please try again."
     
     def run(self):
         """Run the interactive chat loop."""
