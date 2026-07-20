@@ -35,6 +35,7 @@ import litellm
 # Import our tools
 from tools.calculator import calculate
 from tools.db_tool import query_database
+from tools.email_tool import store_resume, list_resumes, draft_application, list_applications, send_email
 
 # DATABASE CONNECTION
 # We connect once at startup and reuse the connection throughout the session.
@@ -95,6 +96,76 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "store_resume",
+            "description": "Store your resume text in the database for later use in job applications.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Full text of your resume"},
+                    "name": {"type": "string", "description": "Optional label for this resume (e.g. 'default')"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_resumes",
+            "description": "List all stored resumes and when they were saved.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "draft_application",
+            "description": "Generate a tailored cover letter email for a job application. Reads your stored resume + the job description, writes a professional email, and saves it as a draft. You can then send it with send_email().",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string", "description": "Company name"},
+                    "role_title": {"type": "string", "description": "Job title you're applying for"},
+                    "recipient_email": {"type": "string", "description": "HR/hiring manager email address"},
+                    "job_description": {"type": "string", "description": "The full job description text"},
+                },
+                "required": ["company", "role_title", "recipient_email", "job_description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_applications",
+            "description": "List your job applications, optionally filtered by status ('draft' or 'sent').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "description": "Filter by status: 'draft' or 'sent'. Omit to see all."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_email",
+            "description": "Send a drafted application email. Provide the application ID from draft_application().",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "application_id": {
+                        "type": "number",
+                        "description": "The ID of the drafted application to send (returned by draft_application)",
+                    }
+                },
+                "required": ["application_id"],
+            },
+        },
+    },
 ]
 
 # TOOL HANDLER
@@ -111,6 +182,27 @@ def handle_tool_call(tool_name: str, args: dict) -> dict:
 
     elif tool_name == "query_database":
         return query_database(sql=args["sql"], db_conn=db_conn)
+
+    elif tool_name == "store_resume":
+        return store_resume(text=args["text"], name=args.get("name", "default"), db_conn=db_conn)
+
+    elif tool_name == "list_resumes":
+        return list_resumes(db_conn=db_conn)
+
+    elif tool_name == "draft_application":
+        return draft_application(
+            company=args["company"],
+            role_title=args["role_title"],
+            recipient_email=args["recipient_email"],
+            job_description=args["job_description"],
+            db_conn=db_conn,
+        )
+
+    elif tool_name == "list_applications":
+        return list_applications(db_conn=db_conn, status=args.get("status"))
+
+    elif tool_name == "send_email":
+        return send_email(application_id=args["application_id"], db_conn=db_conn)
 
     else:
         return {"error": f"Unknown tool: {tool_name}"}
