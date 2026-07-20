@@ -10,7 +10,7 @@ pub struct Tool {
 
 #[derive(Clone, Debug)]
 pub struct Message {
-    pub role: String,
+    pub role: String,    // "user", "agent"
     pub content: String,
 }
 
@@ -19,6 +19,13 @@ pub enum StreamEvent {
     Token(String),
     Done,
     Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolStatus {
+    Idle,
+    Calling(String),  // tool name being called
+    Done(String),     // tool name completed
 }
 
 #[derive(Debug)]
@@ -34,7 +41,9 @@ pub struct App {
     pub typing_spinner: u8,
     pub waiting_response: bool,
     pub connected: bool,
-    pub stream_buffer: String, // accumulates streaming tokens
+    pub stream_buffer: String,
+    pub tool_status: ToolStatus,
+    pub show_welcome: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +75,8 @@ impl App {
             waiting_response: false,
             connected: false,
             stream_buffer: String::new(),
+            tool_status: ToolStatus::Idle,
+            show_welcome: true,
         }
     }
 
@@ -75,11 +86,12 @@ impl App {
             content: content.to_string(),
         });
         self.scroll = 0;
+        self.show_welcome = false;
     }
 
     pub fn set_status(&mut self, msg: &str) {
         self.status_msg = msg.to_string();
-        self.status_timer = 20;
+        self.status_timer = 25;
     }
 
     pub fn tick(&mut self) {

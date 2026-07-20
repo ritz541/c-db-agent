@@ -5,50 +5,36 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Gauge};
 use ratatui::Terminal;
 use std::io::{self, Stdout};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
 mod api;
+mod markdown;
 mod state;
+mod theme;
 
 use api::ApiClient;
-use state::{App, InputMode, StreamEvent, Tab};
+use state::{App, InputMode, StreamEvent, Tab, ToolStatus};
+use theme::Theme;
 
 const TICK_RATE: Duration = Duration::from_millis(200);
-
-// ── Catppuccin-ish color palette ───────────────────────────────────────
-const C_TEXT: Color = Color::Rgb(205, 214, 244);
-const C_DIM: Color = Color::Rgb(108, 118, 148);
-const C_MUTED: Color = Color::Rgb(70, 78, 105);
-const C_CYAN: Color = Color::Rgb(137, 220, 235);
-const C_BLUE: Color = Color::Rgb(137, 180, 250);
-const C_AMBER: Color = Color::Rgb(249, 186, 96);
-const C_RED: Color = Color::Rgb(243, 139, 168);
-const C_PURPLE: Color = Color::Rgb(203, 166, 247);
-const C_GREEN: Color = Color::Rgb(166, 227, 161);
-const C_BG_SEL: Color = Color::Rgb(49, 50, 68);
-const C_BORDER: Color = Color::Rgb(69, 71, 90);
-const C_TITLE: Color = Color::Rgb(180, 190, 220);
-const C_BLACK: Color = Color::Rgb(30, 30, 46);
 
 fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut app = App::new();
     let api = ApiClient::new("http://127.0.0.1:8000");
-    
+
     // Try to connect
     match api.connect() {
         Ok(_) => {
             app.connected = true;
-            app.set_status("Connected to c-db Agent!");
-            
-            // Fetch tools in background
+            app.set_status("Connected");
             if let Ok(tools) = api.get_tools() {
                 app.tools = tools.into_iter().map(|t| state::Tool {
                     name: t.name,
@@ -60,7 +46,7 @@ fn main() -> Result<()> {
             app.set_status(&format!("Backend offline: {}", e));
         }
     }
-    
+
     let result = run(&mut terminal, &mut app, &api);
     restore_terminal(&mut terminal)?;
     result
@@ -98,12 +84,15 @@ fn run(
 ) -> Result<()> {
     let mut last_tick = Instant::now();
     let (stream_tx, stream_rx) = channel::<StreamEvent>();
-    
+
     loop {
-        // Check for streaming events
+        // Handle streaming events
         while let Ok(event) = stream_rx.try_recv() {
             match event {
                 StreamEvent::Token(token) => {
+                    if app.stream_buffer.is_empty() {
+                        app.tool_status = ToolStatus::Idle;
+                    }
                     app.stream_buffer.push_str(&token);
                     app.waiting_response = true;
                 }
@@ -114,6 +103,7 @@ fn run(
                     }
                     app.stream_buffer.clear();
                     app.waiting_response = false;
+                    app.tool_status = ToolStatus::Idle;
                     app.set_status("Ready");
                 }
                 StreamEvent::Error(err) => {
@@ -123,17 +113,18 @@ fn run(
                     }
                     app.stream_buffer.clear();
                     app.waiting_response = false;
+                    app.tool_status = ToolStatus::Idle;
                     app.set_status(&format!("Error: {}", err));
                 }
             }
         }
-        
+
         terminal.draw(|f| ui(f, app))?;
-        
+
         let timeout = TICK_RATE
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0));
-        
+
         if crossterm::event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
@@ -143,7 +134,7 @@ fn run(
                 }
             }
         }
-        
+
         if last_tick.elapsed() >= TICK_RATE {
             last_tick = Instant::now();
             app.tick();
@@ -154,18 +145,16 @@ fn run(
 fn handle_key(
     key: KeyEvent,
     app: &mut App,
-    api: &ApiClient,
+    _api: &ApiClient,
     stream_tx: &std::sync::mpsc::Sender<StreamEvent>,
 ) -> bool {
-    // Global quit
     if key.code == KeyCode::Char('q') && app.input_mode == InputMode::Normal {
         return true;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         return true;
     }
-    
-    // Tab switching (only in normal mode)
+
     if app.input_mode == InputMode::Normal {
         match key.code {
             KeyCode::F(1) | KeyCode::Char('1') => app.tab = Tab::Chat,
@@ -177,14 +166,13 @@ fn handle_key(
             _ => {}
         }
     }
-    
+
     match app.input_mode {
         InputMode::Normal => match key.code {
             KeyCode::Char('i') if app.tab == Tab::Chat => {
                 app.input_mode = InputMode::Editing;
                 app.input.clear();
             }
-            // Scroll in history tab
             KeyCode::Up if app.tab == Tab::History => {
                 if app.scroll < app.messages.len().saturating_sub(1) {
                     app.scroll += 1;
@@ -201,19 +189,18 @@ fn handle_key(
                 if !input.is_empty() && !app.waiting_response {
                     app.add_message("user", &input);
                     app.waiting_response = true;
-                    app.set_status("Agent is thinking...");
-                    
+                    app.tool_status = ToolStatus::Idle;
+                    app.set_status("Thinking...");
+
                     if app.connected {
-                        // Use streaming for a real-time token-by-token experience
                         let tx = stream_tx.clone();
                         let api = ApiClient::new("http://127.0.0.1:8000");
                         api.send_message_stream(input, tx);
                     } else {
-                        app.add_message("agent", "Backend is offline. Start it with: python api.py");
+                        app.add_message("agent", "Backend is offline. Start it with `python api.py`");
+                        app.waiting_response = false;
                         app.set_status("Backend offline");
                     }
-                    
-                    app.waiting_response = false;
                     app.input.clear();
                 }
                 app.input_mode = InputMode::Normal;
@@ -229,34 +216,34 @@ fn handle_key(
             _ => {}
         },
     }
-    
+
     false
 }
 
-// ── UI Rendering ──────────────────────────────────────────────────────
+// ── Theme helpers ────────────────────────────────────────────────────
 
-fn border() -> Style { Style::default().fg(C_BORDER) }
-fn title_style() -> Style { Style::default().fg(C_TITLE) }
-
-fn panel(title: &str) -> Block<'static> {
+fn panel<'a>(theme: &'a Theme, title: &str) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(border())
-        .title(Span::styled(format!(" {title} "), title_style()))
+        .border_type(BorderType::Rounded)
+        .border_style(theme.style_border())
+        .title(Span::styled(format!(" {} ", title), theme.style_muted()))
 }
 
-fn panel_accent(title: &str, accent: Color) -> Block<'static> {
+fn panel_accent<'a>(_theme: &'a Theme, title: &str, style: Style) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(accent))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ))
+        .border_type(BorderType::Rounded)
+        .border_style(style)
+        .title(Span::styled(format!(" {} ", title), style.add_modifier(Modifier::BOLD)))
 }
+
+// ── UI Rendering ─────────────────────────────────────────────────────
 
 fn ui(f: &mut ratatui::Frame, app: &App) {
+    let theme = Theme::default();
     let size = f.area();
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -266,188 +253,227 @@ fn ui(f: &mut ratatui::Frame, app: &App) {
         ])
         .split(size);
 
-    render_header(f, app, chunks[0]);
+    render_header(f, app, &theme, chunks[0]);
 
     match app.tab {
-        Tab::Chat => render_chat(f, app, chunks[1]),
-        Tab::Tools => render_tools(f, app, chunks[1]),
-        Tab::History => render_history(f, app, chunks[1]),
-        Tab::Config => render_config(f, app, chunks[1]),
+        Tab::Chat => render_chat(f, app, &theme, chunks[1]),
+        Tab::Tools => render_tools(f, app, &theme, chunks[1]),
+        Tab::History => render_history(f, app, &theme, chunks[1]),
+        Tab::Config => render_config(f, app, &theme, chunks[1]),
     }
 
-    render_footer(f, app, chunks[2]);
+    render_footer(f, app, &theme, chunks[2]);
 }
 
-fn render_header(f: &mut ratatui::Frame, app: &App, area: Rect) {
+fn render_header(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
     let spin = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][app.typing_spinner as usize];
-    
+
     let status = if !app.connected {
-        Span::styled(
-            " ⚠ DISCONNECTED ",
-            Style::default().fg(Color::Black).bg(C_RED).add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" \u{26A0} OFFLINE ", Style::default().fg(theme.bg_base).bg(theme.accent_error))
     } else if app.waiting_response {
-        Span::styled(
-            format!(" {} THINKING ", spin),
-            Style::default().fg(Color::Black).bg(C_AMBER).add_modifier(Modifier::BOLD),
-        )
+        Span::styled(format!(" {} ", spin), Style::default().fg(theme.bg_base).bg(theme.text_secondary))
     } else {
-        Span::styled(
-            " ● IDLE ",
-            Style::default().fg(Color::Black).bg(C_GREEN).add_modifier(Modifier::BOLD),
-        )
+        Span::styled(" \u{25CF} ", Style::default().fg(theme.accent_success))
     };
 
-    let title = Span::styled(
-        " c-db Agent ",
-        Style::default()
-            .fg(Color::Black)
-            .bg(C_CYAN)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let info = if app.connected {
-        Span::styled(
-            format!("  {} tools loaded ", app.tools.len()),
-            Style::default().fg(C_DIM),
-        )
-    } else {
-        Span::styled(
-            "  backend: python api.py ",
-            Style::default().fg(C_AMBER),
-        )
-    };
-
+    let title = Span::styled(" c-db ", Style::default().fg(theme.bg_base).bg(theme.text_primary).add_modifier(Modifier::BOLD));
+    let info = Span::styled(format!(" {} tools ", app.tools.len()), theme.style_muted());
     let toast = if !app.status_msg.is_empty() {
-        Span::styled(
-            format!(" · {} ", app.status_msg),
-            Style::default().fg(C_AMBER),
-        )
+        Span::styled(format!(" \u{00B7} {} ", app.status_msg), theme.style_secondary())
     } else {
         Span::raw("")
     };
 
     let line = Line::from(vec![title, status, info, toast]);
-    f.render_widget(Paragraph::new(line).block(Block::default().borders(Borders::ALL).border_style(border())), area);
+    f.render_widget(
+        Paragraph::new(line).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.style_border())),
+        area,
+    );
 }
 
-fn render_chat(f: &mut ratatui::Frame, app: &App, area: Rect) {
+fn render_chat(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
+    // If no messages and welcome is showing, render welcome card
+    if app.show_welcome && app.messages.is_empty() {
+        render_welcome(f, app, theme, area);
+        return;
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),    // messages
-            Constraint::Length(3), // input
+            Constraint::Min(0),
+            Constraint::Length(3),
         ])
         .split(area);
 
-    // Messages area
-    let h = chunks[0].height.saturating_sub(2) as usize;
-    let start = app.messages.len().saturating_sub(h + app.scroll);
+    // Messages
+    let msg_area = chunks[0];
+    let msg_h = msg_area.height.saturating_sub(2) as usize;
+    let start = app.messages.len().saturating_sub(msg_h + app.scroll);
 
-    let messages: Vec<Line> = if app.messages.is_empty() {
-        vec![
-            Line::from(""),
-            Line::from(Span::styled("  Welcome to c-db Agent! 👋", Style::default().fg(C_CYAN).add_modifier(Modifier::BOLD))),
-            Line::from(""),
-            Line::from(Span::styled("  I'm your AI assistant with access to tools:", Style::default().fg(C_DIM))),
-            Line::from(Span::styled("    🔢  Calculate math expressions", Style::default().fg(C_DIM))),
-            Line::from(Span::styled("    🗄️  Query databases", Style::default().fg(C_DIM))),
-            Line::from(Span::styled("    ✉️  Draft & send job applications", Style::default().fg(C_DIM))),
-            Line::from(Span::styled("    🌤️  Check weather", Style::default().fg(C_DIM))),
-            Line::from(""),
-            Line::from(Span::styled("  Press 'i' to start typing, Enter to send.", Style::default().fg(C_BLUE))),
-            Line::from(Span::styled("  Press 'q' to quit.", Style::default().fg(C_DIM))),
-        ]
+    let mut lines: Vec<Line> = Vec::new();
+
+    if app.messages.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("  No messages yet. Press i to start typing.", theme.style_muted())));
     } else {
-        app.messages
-            .iter()
-            .skip(start)
-            .take(h)
-            .map(|m| {
-                let (prefix, color) = if m.role == "user" {
-                    ("▸ You:  ", C_CYAN)
-                } else {
-                    ("◂ Agent:", C_GREEN)
-                };
-                Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                    Span::styled(&m.content, Style::default().fg(C_TEXT)),
-                ])
-            })
-            .collect()
-    };
+        for msg in app.messages.iter().skip(start).take(msg_h) {
+            let prefix = if msg.role == "user" { "\u{25B8} " } else { "" };
+            let msg_lines = markdown::render_message(theme, &msg.content, msg.role == "user");
+            for ml in msg_lines {
+                let mut spans = vec![Span::styled(prefix, theme.style_muted())];
+                spans.extend(ml.spans.into_iter());
+                lines.push(Line::from(spans));
+            }
+            lines.push(Line::from("")); // spacing between messages
+        }
+    }
+
+    // If streaming, show the buffer inline
+    if app.waiting_response && !app.stream_buffer.is_empty() {
+        let stream_lines = markdown::render_message(theme, &app.stream_buffer, false);
+        for sl in stream_lines {
+            let mut spans = vec![Span::styled("\u{25B8} ", theme.style_muted())];
+            spans.extend(sl.spans.into_iter());
+            lines.push(Line::from(spans));
+        }
+    }
+
+    // Tool call status
+    match &app.tool_status {
+        ToolStatus::Calling(name) => {
+            let spin = ["\u{25D4}", "\u{25D1}", "\u{25D5}", "\u{25D7}"][(app.typing_spinner % 4) as usize];
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", spin), theme.style_tool()),
+                Span::styled(format!("Calling {}...", name), theme.style_muted()),
+            ]));
+        }
+        ToolStatus::Done(name) => {
+            lines.push(Line::from(vec![
+                Span::styled(" \u{2713} ", theme.style_success()),
+                Span::styled(format!("{} completed", name), theme.style_muted()),
+            ]));
+        }
+        ToolStatus::Idle => {}
+    }
+
+    // Thinking indicator
+    if app.waiting_response && app.stream_buffer.is_empty() {
+        let dots = match app.typing_spinner % 4 {
+            0 => "   ",
+            1 => ".  ",
+            2 => ".. ",
+            _ => "...",
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  Thinking{}", dots),
+            theme.style_muted(),
+        )));
+    }
 
     f.render_widget(
-        Paragraph::new(messages).block(panel_accent("💬 Chat", C_CYAN)),
-        chunks[0],
+        Paragraph::new(lines).block(panel(theme, " Chat ")),
+        msg_area,
     );
 
-    // Input area
+    // Input bar
     let input_display = match app.input_mode {
         InputMode::Editing => {
             if app.waiting_response {
                 " Waiting for response...".to_string()
             } else {
-                format!(" {}▎", app.input)
+                format!(" {}|", app.input)
             }
         }
-        InputMode::Normal => " Press 'i' to type...".to_string(),
+        InputMode::Normal => " Press i to type, Enter to send".to_string(),
     };
 
-    let input_style = match app.input_mode {
-        InputMode::Editing if !app.waiting_response => Style::default().fg(C_TEXT).bg(C_BG_SEL),
-        _ => Style::default().fg(C_DIM),
+    let input_style = if app.input_mode == InputMode::Editing && !app.waiting_response {
+        theme.style_highlight()
+    } else {
+        theme.style_muted()
     };
 
     f.render_widget(
-        Paragraph::new(input_display)
-            .style(input_style)
-            .block(panel(" Input ")),
+        Paragraph::new(input_display).style(input_style).block(panel(theme, " Input ")),
         chunks[1],
     );
 }
 
-fn render_tools(f: &mut ratatui::Frame, app: &App, area: Rect) {
+fn render_welcome(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  c-db Agent", Style::default().fg(theme.text_primary).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+        Line::from(Span::styled("  \u{25C9}  AI assistant with tool access", theme.style_secondary())),
+        Line::from(Span::styled("  \u{25C9}  Math, databases, email, weather", theme.style_secondary())),
+        Line::from(Span::styled("  \u{25C9}  Auto-discovery of tools", theme.style_secondary())),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Tools loaded: ", theme.style_muted()),
+            Span::styled(format!("{}", app.tools.len()), theme.style_primary()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Status: ", theme.style_muted()),
+            if app.connected {
+                Span::styled("Connected", theme.style_success())
+            } else {
+                Span::styled("Offline", theme.style_error())
+            },
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  \u{2500}\u{2500}\u{2500} Quick Start \u{2500}\u{2500}\u{2500}", theme.style_muted())),
+        Line::from(Span::styled("  i     Start typing", theme.style_muted())),
+        Line::from(Span::styled("  Enter Send message", theme.style_muted())),
+        Line::from(Span::styled("  F1-4  Switch tabs", theme.style_muted())),
+        Line::from(Span::styled("  q     Quit", theme.style_muted())),
+        Line::from(""),
+        Line::from(Span::styled("  Try: calculate 15 * 37", theme.style_secondary())),
+        Line::from(Span::styled("  Try: what's the weather in Tokyo?", theme.style_secondary())),
+        Line::from(Span::styled("  Try: draft an application for Acme Corp", theme.style_secondary())),
+    ];
+
+    f.render_widget(
+        Paragraph::new(lines).block(panel_accent(theme, " \u{2728} Welcome ", theme.style_primary())),
+        area,
+    );
+}
+
+fn render_tools(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
     let items: Vec<ListItem> = if app.tools.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "  No tools loaded. Is the backend running?",
-            Style::default().fg(C_DIM),
+            "  No tools loaded.",
+            theme.style_muted(),
         )))]
     } else {
         app.tools.iter().map(|t| {
             ListItem::new(vec![
                 Line::from(vec![
-                    Span::styled("  ◆ ", Style::default().fg(C_CYAN)),
-                    Span::styled(
-                        &t.name,
-                        Style::default().fg(C_TEXT).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled("  \u{25C6} ", theme.style_tool()),
+                    Span::styled(&t.name, theme.style_primary().add_modifier(Modifier::BOLD)),
                 ]),
                 Line::from(vec![
-                    Span::styled("    ", Style::default().fg(C_DIM)),
-                    Span::styled(
-                        truncate(&t.description, 60),
-                        Style::default().fg(C_DIM),
-                    ),
+                    Span::styled("    ", theme.style_muted()),
+                    Span::styled(&t.description, theme.style_secondary()),
                 ]),
             ])
         }).collect()
     };
 
     f.render_widget(
-        List::new(items).block(panel_accent("🔧 Available Tools", C_PURPLE)),
+        List::new(items).block(panel_accent(theme, " Tools ", theme.style_tool())),
         area,
     );
 }
 
-fn render_history(f: &mut ratatui::Frame, app: &App, area: Rect) {
+fn render_history(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
     let h = area.height.saturating_sub(2) as usize;
     let start = app.messages.len().saturating_sub(h + app.scroll);
 
     let lines: Vec<Line> = if app.messages.is_empty() {
         vec![
-            Line::from(Span::styled("  No conversation history yet.", Style::default().fg(C_DIM))),
-            Line::from(Span::styled("  Start chatting in the Chat tab (F1).", Style::default().fg(C_MUTED))),
+            Line::from(Span::styled("  No conversation history yet.", theme.style_muted())),
         ]
     } else {
         app.messages
@@ -456,75 +482,68 @@ fn render_history(f: &mut ratatui::Frame, app: &App, area: Rect) {
             .skip(start)
             .take(h)
             .map(|(i, m)| {
-                let (tag, color) = if m.role == "user" { ("YOU", C_CYAN) } else { ("AI ", C_GREEN) };
+                let role_tag = if m.role == "user" { " you " } else { " agt " };
+                let role_style = if m.role == "user" { theme.style_user() } else { theme.style_assistant() };
                 Line::from(vec![
-                    Span::styled(format!("#{:03} ", i + 1), Style::default().fg(C_DIM)),
-                    Span::styled(format!("[{}]", tag), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                    Span::styled(" ", Style::default().fg(C_DIM)),
-                    Span::styled(truncate(&m.content, 60), Style::default().fg(C_TEXT)),
+                    Span::styled(format!("#{:02}", i + 1), theme.style_muted()),
+                    Span::styled(format!("[{}]", role_tag), role_style),
+                    Span::styled(" ", theme.style_muted()),
+                    Span::styled(
+                        if m.content.len() > 60 { format!("{}...", &m.content[..57]) } else { m.content.clone() },
+                        theme.style_secondary(),
+                    ),
                 ])
             })
             .collect()
     };
 
-    let scroll_hint = if app.scroll > 0 { " · scrolled" } else { "" };
+    let hint = if app.scroll > 0 { " (scrolled)" } else { "" };
     f.render_widget(
-        Paragraph::new(lines).block(panel_accent(&format!("📜 History{scroll_hint}"), C_BLUE)),
+        Paragraph::new(lines).block(panel_accent(theme, &format!(" History{}", hint), theme.style_secondary())),
         area,
     );
 }
 
-fn render_config(f: &mut ratatui::Frame, _app: &App, area: Rect) {
+fn render_config(f: &mut ratatui::Frame, _app: &App, theme: &Theme, area: Rect) {
     let lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Backend: ", Style::default().fg(C_DIM)),
-            Span::styled("http://127.0.0.1:8000", Style::default().fg(C_TEXT)),
+            Span::styled("  Backend:  ", theme.style_muted()),
+            Span::styled("http://127.0.0.1:8000", theme.style_primary()),
         ]),
         Line::from(vec![
-            Span::styled("  Model:   ", Style::default().fg(C_DIM)),
-            Span::styled("deepseek/deepseek-v4-flash", Style::default().fg(C_CYAN)),
+            Span::styled("  Model:    ", theme.style_muted()),
+            Span::styled("deepseek/deepseek-v4-flash", theme.style_secondary()),
         ]),
         Line::from(""),
-        Line::from(Span::styled("  ─── Quick Start ───", Style::default().fg(C_MUTED))),
-        Line::from(Span::styled("  Start backend:    python api.py", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  Start TUI:        cargo run", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  Add new tool:     Create tools/my_tool.py", Style::default().fg(C_DIM))),
+        Line::from(Span::styled("  \u{2500}\u{2500}\u{2500} Quick Start \u{2500}\u{2500}\u{2500}", theme.style_muted())),
+        Line::from(Span::styled("  python api.py           Start backend", theme.style_muted())),
+        Line::from(Span::styled("  cargo run --release     Start TUI", theme.style_muted())),
+        Line::from(Span::styled("  tools/weather.py        Add a new tool", theme.style_muted())),
         Line::from(""),
-        Line::from(Span::styled("  ─── Keybindings ───", Style::default().fg(C_MUTED))),
-        Line::from(Span::styled("  F1-F4 / 1-4:     Switch tabs", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  i               Input mode", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  Enter           Send message", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  Esc             Cancel input", Style::default().fg(C_DIM))),
-        Line::from(Span::styled("  q / Ctrl+C      Quit", Style::default().fg(C_DIM))),
+        Line::from(Span::styled("  \u{2500}\u{2500}\u{2500} Keys \u{2500}\u{2500}\u{2500}", theme.style_muted())),
+        Line::from(Span::styled("  i / Enter    Type and send messages", theme.style_muted())),
+        Line::from(Span::styled("  F1 Chat  F2 Tools  F3 History  F4 Config", theme.style_muted())),
+        Line::from(Span::styled("  Tab          Cycle tabs", theme.style_muted())),
+        Line::from(Span::styled("  q / Ctrl+C   Quit", theme.style_muted())),
     ];
 
     f.render_widget(
-        Paragraph::new(lines).block(panel_accent("⚙️ Config", C_AMBER)),
+        Paragraph::new(lines).block(panel_accent(theme, " Config ", theme.style_user())),
         area,
     );
 }
 
-fn render_footer(f: &mut ratatui::Frame, _app: &App, area: Rect) {
-    let help = match _app.input_mode {
-        InputMode::Normal => "  i: type  │  q: quit  │  Tab: switch tab  │  ↑↓: scroll",
-        InputMode::Editing => "  Enter: send  │  Esc: cancel",
+fn render_footer(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
+    let help = match app.input_mode {
+        InputMode::Normal => " i: type  |  q: quit  |  Tab: switch tab  |  \u{2191}\u{2193}: scroll",
+        InputMode::Editing => " Enter: send  |  Esc: cancel",
     };
 
-    let line = Line::from(vec![
-        Span::styled(help, Style::default().fg(C_DIM)),
-    ]);
-    
     f.render_widget(
-        Paragraph::new(line).block(Block::default().borders(Borders::ALL).border_style(border())),
+        Paragraph::new(Line::from(Span::styled(help, theme.style_muted()))).block(
+            Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.style_border())
+        ),
         area,
     );
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max.saturating_sub(1)])
-    }
 }
