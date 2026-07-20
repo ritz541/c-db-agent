@@ -24,8 +24,35 @@ Run:           python agent.py
 import os
 import sys
 import json
+import uuid
+import tenacity
 
-# Load environment variables from .env
+# ── Observability Setup ─────────────────────────────────────────
+# Sentry for error tracking (must be initialized before other imports)
+import sentry_sdk
+
+sentry_sdk.init(
+    dsn="https://PLACEHOLDER_DSN@oXXX.ingest.sentry.io/XXX",
+    send_default_pii=True,
+    traces_sample_rate=1.0,  # Set to 0.1 for production
+    environment="development",
+)
+
+# Structlog for structured logging
+import structlog
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="ISO"),
+        structlog.dev.ConsoleRenderer(),  # Use JSONRenderer() for production
+    ]
+)
+
+logger = structlog.get_logger()
+
+# ── Load Environment Variables ───────────────────────────────────
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -35,27 +62,66 @@ import litellm
 # Import our tools
 from tools.calculator import calculate
 from tools.db_tool import query_database
-from tools.email_tool import store_resume, list_resumes, draft_application, list_applications, send_email
+from tools.email_tool import store_resume, list_resumes, load_resume_from_pdf, draft_application, list_applications, send_email
+
+# Import configuration
+from config import get_settings
+
+# Load settings with validation
+try:
+    settings = get_settings()
+    DEEPSEEK_API_KEY = settings.deepseek_api_key
+    COCKROACHDB_URL = settings.cockroachdb_url
+    MODEL_NAME = settings.llm_model
+except Exception as e:
+    logger.error("config.load_failed", error=str(e))
+    print(f"Configuration error: {e}")
+    sys.exit(1)
 
 # DATABASE CONNECTION
-# We connect once at startup and reuse the connection throughout the session.
+# Use a connection pool for better performance and reliability.
 import psycopg2
+from psycopg2 import pool
 
-COCKROACHDB_URL = os.getenv("COCKROACHDB_URL")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-# Read model from .env so you can change it without editing code
-# Format: "deepseek/deepseek-v4-flash" or any LiteLLM-supported model
-MODEL_NAME = os.getenv("LLM_MODEL", "deepseek/deepseek-v4-flash")
-
-# Connect to CockroachDB
-print("Connecting to CockroachDB...")
+logger.info("db.pool_creating")
 try:
-    db_conn = psycopg2.connect(COCKROACHDB_URL)
-    print("Connected to CockroachDB!")
+    db_pool = pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=5,
+        dsn=COCKROACHDB_URL,
+    )
+    logger.info("db.pool_created")
+
+    # Auto-load resume from PDF if path is set in .env
+    # Get a connection from the pool for startup tasks
+    db_conn = db_pool.getconn()
+    try:
+        pdf_path = os.getenv("RESUME_PDF_PATH", "")
+        if pdf_path and os.path.isfile(pdf_path):
+            result = load_resume_from_pdf(pdf_path=pdf_path, db_conn=db_conn)
+            if result["success"]:
+                logger.info("resume.loaded", path=pdf_path)
+            else:
+                logger.warning("resume.load_skipped", error=result.get("error"))
+        else:
+            logger.info("resume.pdf_not_found")
+    finally:
+        db_pool.putconn(db_conn)
 except Exception as e:
-    print(f"Failed to connect to CockroachDB: {e}")
+    logger.error("db.pool_creation_failed", error=str(e))
+    print(f"Failed to create database connection pool: {e}")
     print("   Check your COCKROACHDB_URL in .env")
     sys.exit(1)
+
+
+def get_db_connection():
+    """Get a connection from the pool."""
+    return db_pool.getconn()
+
+
+def return_db_connection(conn):
+    """Return a connection to the pool."""
+    db_pool.putconn(conn)
 
 # TOOL DEFINITIONS
 # These are in OpenAI's tool-calling format (LiteLLM passes them through).
@@ -122,6 +188,27 @@ tools = [
     {
         "type": "function",
         "function": {
+            "name": "load_resume_from_pdf",
+            "description": "Read a PDF file from disk, extract its text, and store it in the database as your resume. Use this when you have a new or updated resume PDF.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pdf_path": {
+                        "type": "string",
+                        "description": "Full path to the PDF file, e.g. '/home/ritz/Downloads/resume.pdf'",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional label for this resume (default: 'default')",
+                    },
+                },
+                "required": ["pdf_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "draft_application",
             "description": "Generate a tailored cover letter email for a job application. Reads your stored resume + the job description, writes a professional email, and saves it as a draft. You can then send it with send_email().",
             "parameters": {
@@ -175,37 +262,93 @@ def handle_tool_call(tool_name: str, args: dict) -> dict:
     """
     Execute the tool requested by DeepSeek.
     """
-    print(f"   Tool called: {tool_name}({json.dumps(args)})")
+    logger.info("tool.called", tool=tool_name, args=args)
 
-    if tool_name == "calculate":
-        return calculate(expression=args["expression"], db_conn=db_conn)
+    # Get a connection from the pool for this tool call
+    db_conn = get_db_connection()
+    try:
 
-    elif tool_name == "query_database":
-        return query_database(sql=args["sql"], db_conn=db_conn)
+        if tool_name == "calculate":
+            return calculate(expression=args["expression"], db_conn=db_conn)
 
-    elif tool_name == "store_resume":
-        return store_resume(text=args["text"], name=args.get("name", "default"), db_conn=db_conn)
+        elif tool_name == "query_database":
+            return query_database(sql=args["sql"], db_conn=db_conn)
 
-    elif tool_name == "list_resumes":
-        return list_resumes(db_conn=db_conn)
+        elif tool_name == "store_resume":
+            return store_resume(text=args["text"], name=args.get("name", "default"), db_conn=db_conn)
 
-    elif tool_name == "draft_application":
-        return draft_application(
-            company=args["company"],
-            role_title=args["role_title"],
-            recipient_email=args["recipient_email"],
-            job_description=args["job_description"],
-            db_conn=db_conn,
-        )
+        elif tool_name == "list_resumes":
+            return list_resumes(db_conn=db_conn)
 
-    elif tool_name == "list_applications":
-        return list_applications(db_conn=db_conn, status=args.get("status"))
+        elif tool_name == "load_resume_from_pdf":
+            return load_resume_from_pdf(
+                pdf_path=args["pdf_path"],
+                db_conn=db_conn,
+                name=args.get("name", "default"),
+            )
 
-    elif tool_name == "send_email":
-        return send_email(application_id=args["application_id"], db_conn=db_conn)
+        elif tool_name == "draft_application":
+            return draft_application(
+                company=args["company"],
+                role_title=args["role_title"],
+                recipient_email=args["recipient_email"],
+                job_description=args["job_description"],
+                db_conn=db_conn,
+            )
 
-    else:
-        return {"error": f"Unknown tool: {tool_name}"}
+        elif tool_name == "list_applications":
+            return list_applications(db_conn=db_conn, status=args.get("status"))
+
+        elif tool_name == "send_email":
+            return send_email(application_id=args["application_id"], db_conn=db_conn)
+
+        else:
+            return {"error": f"Unknown tool: {tool_name}"}
+
+    finally:
+        # Return the connection to the pool
+        return_db_connection(db_conn)
+
+
+# LLM API CALL WRAPPER
+# Wraps litellm.completion with retry logic using tenacity
+
+@tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+    stop=tenacity.stop_after_attempt(3),
+    reraise=True,
+    before_sleep=lambda retry_state: logger.warning(
+        "llm.retry",
+        attempt=retry_state.attempt_number,
+        wait=retry_state.next_action.sleep,
+    ),
+)
+def call_llm(messages: list, tools: list) -> dict:
+    """
+    Call LLM API with retry logic.
+
+    Parameters
+    ----------
+    messages : list
+        Conversation history
+    tools : list
+        Tool definitions
+
+    Returns
+    -------
+    dict
+        LLM response
+    """
+    logger.info("llm.calling", message_count=len(messages))
+    response = litellm.completion(
+        model=MODEL_NAME,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+        api_key=DEEPSEEK_API_KEY,
+    )
+    logger.info("llm.responded", has_tool_calls=bool(response.choices[0].message.tool_calls))
+    return response
 
 
 # SYSTEM PROMPT
@@ -239,6 +382,11 @@ def chat():
     print("=" * 60 + "\n")
 
     while True:
+        # Generate request ID for tracing
+        request_id = uuid.uuid4().hex[:8]
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+
         # 1. GET USER INPUT
         user_input = input("You: ").strip()
         if user_input.lower() in ("exit", "quit"):
@@ -256,18 +404,11 @@ def chat():
         #   - messages: conversation history
         #   - tools: the tool definitions
         #   - tool_choice: "auto" - let the model decide if it needs tools
-        print("   Thinking...")
         try:
-            response = litellm.completion(
-                model=MODEL_NAME,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                api_key=DEEPSEEK_API_KEY,
-            )
+            response = call_llm(messages=messages, tools=tools)
         except Exception as e:
-            print(f"API Error: {e}")
-            print("   Check your DEEPSEEK_API_KEY in .env")
+            logger.error("llm.call_failed", error=str(e))
+            print("   API Error: Check logs for details")
             messages.pop()
             continue
 
@@ -307,15 +448,8 @@ def chat():
                 })
 
             # Now send everything back to the LLM for the final response
-            print("   Processing tool results...")
             try:
-                final_response = litellm.completion(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    tools=tools,
-                    tool_choice="auto",
-                    api_key=DEEPSEEK_API_KEY,
-                )
+                final_response = call_llm(messages=messages, tools=tools)
                 final_message = final_response.choices[0].message
 
                 # Add the final assistant response to history
@@ -325,7 +459,8 @@ def chat():
                 print(f"Agent: {final_message.content}")
 
             except Exception as e:
-                print(f"API Error: {e}")
+                logger.error("llm.final_response_failed", error=str(e))
+                print("   Error processing tool results")
 
         else:
             # No tool calls - direct text response from the LLM
@@ -340,7 +475,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nGoodbye!")
     finally:
-        # Close the database connection when done
-        if db_conn:
-            db_conn.close()
-            print("Database connection closed.")
+        # Close the database connection pool when done
+        if 'db_pool' in globals():
+            db_pool.closeall()
+            logger.info("db.pool_closed")
+            print("Database connection pool closed.")

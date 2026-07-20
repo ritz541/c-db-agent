@@ -15,6 +15,9 @@ Why store in DB?
 
 import math
 import traceback
+import structlog
+
+logger = structlog.get_logger()
 
 
 def calculate(expression: str, db_conn) -> dict:
@@ -67,7 +70,9 @@ def calculate(expression: str, db_conn) -> dict:
 
         # Evaluate the expression in the restricted namespace
         # __builtins__ is set to {} to prevent dangerous Python builtins
+        logger.info("calculate.attempting", expression=expression)
         result = eval(expression, {"__builtins__": {}}, allowed_names)
+        logger.info("calculate.success", expression=expression, result=str(result))
 
         # ── 2. STORE IN DATABASE ────────────────────────────────────
         # Create the table if it doesn't exist
@@ -87,6 +92,7 @@ def calculate(expression: str, db_conn) -> dict:
             )
         # Commit the transaction so the data is saved
         db_conn.commit()
+        logger.info("calculate.stored_in_db", expression=expression)
 
         return {
             "success": True,
@@ -98,6 +104,7 @@ def calculate(expression: str, db_conn) -> dict:
 
     except Exception as e:
         # If anything goes wrong, return a helpful error
+        logger.error("calculate.failed", expression=expression, error=str(e))
         return {
             "success": False,
             "expression": expression,

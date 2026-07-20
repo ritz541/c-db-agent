@@ -20,6 +20,9 @@ import re
 import traceback
 import datetime
 from decimal import Decimal
+import structlog
+
+logger = structlog.get_logger()
 
 
 # ── BLOCKED SQL STATEMENTS ──────────────────────────────────────────────
@@ -66,6 +69,7 @@ def is_safe_query(sql: str) -> bool:
     # Check against blocked patterns
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, cleaned):
+            logger.warning("db.query_blocked", sql=sql[:100], pattern=pattern)
             return False
     return True
 
@@ -88,6 +92,7 @@ def query_database(sql: str, db_conn) -> dict:
     try:
         # ── 1. SAFETY CHECK ──────────────────────────────────────────
         if not is_safe_query(sql):
+            logger.warning("db.query_blocked", sql=sql[:100])
             return {
                 "success": False,
                 "error": "BLOCKED: This query contains destructive operations (DROP, TRUNCATE, DELETE, etc.). Only SELECT, INSERT, and CREATE operations are allowed.",
@@ -95,6 +100,7 @@ def query_database(sql: str, db_conn) -> dict:
             }
 
         # ── 2. EXECUTE THE QUERY ─────────────────────────────────────
+        logger.info("db.query_executing", sql=sql[:100])
         with db_conn.cursor() as cur:
             cur.execute(sql)
 
@@ -105,6 +111,7 @@ def query_database(sql: str, db_conn) -> dict:
                 # Fetch all rows
                 rows = cur.fetchall()
                 row_count = len(rows)
+                logger.info("db.query_success", row_count=row_count, sql=sql[:100])
 
                 # Format the results nicely, serializing datetime/Decimal/etc.
                 return {
@@ -120,6 +127,7 @@ def query_database(sql: str, db_conn) -> dict:
                 # Get the row count affected (if applicable)
                 row_count = cur.rowcount
                 db_conn.commit()
+                logger.info("db.query_success", row_count=row_count, sql=sql[:100])
                 return {
                     "success": True,
                     "columns": [],
@@ -131,6 +139,7 @@ def query_database(sql: str, db_conn) -> dict:
 
     except Exception as e:
         # Catch and return SQL errors (wrong syntax, missing tables, etc.)
+        logger.error("db.query_failed", sql=sql[:100], error=str(e))
         return {
             "success": False,
             "error": str(e),

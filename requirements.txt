@@ -7,3 +7,13 @@ litellm>=1.60.0
 psycopg2-binary>=2.9.9
 # python-dotenv — load secrets from .env file
 python-dotenv>=1.0.0
+# structlog — structured logging
+structlog>=24.0.0
+# sentry-sdk — error tracking and performance monitoring
+sentry-sdk[stdlib]>=2.0.0
+# tenacity — retry logic with exponential backoff
+tenacity>=8.0.0
+# pydantic-settings — type-safe configuration with validation
+pydantic-settings>=2.0.0
+# pytest — testing framework
+pytest>=8.0.0
