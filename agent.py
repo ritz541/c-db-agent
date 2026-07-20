@@ -438,10 +438,14 @@ def chat():
                     args = {}
 
                 # Execute the tool
-                result = handle_tool_call(
-                    tool_name=tool_call.function.name,
-                    args=args,
-                )
+                try:
+                    result = handle_tool_call(
+                        tool_name=tool_call.function.name,
+                        args=args,
+                    )
+                except Exception as tool_e:
+                    logger.error("tool.execution_failed", tool=tool_call.function.name, error=str(tool_e))
+                    result = {"success": False, "error": str(tool_e)}
 
                 # 4. SEND TOOL RESULT BACK TO LLM
                 # This is how tool calling works:
