@@ -1,1 +1,0 @@
-/home/ritz/Code/Projects/c-db/c-db-tui/target/release/c-db-tui: /home/ritz/Code/Projects/c-db/c-db-tui/src/api.rs /home/ritz/Code/Projects/c-db/c-db-tui/src/main.rs /home/ritz/Code/Projects/c-db/c-db-tui/src/state.rs
