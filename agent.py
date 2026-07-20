@@ -414,10 +414,14 @@ def chat():
         if not user_input:
             continue
 
-        # Add user message to history
-        messages.append({"role": "user", "content": user_input})
+        # Wrap each user interaction in a Sentry transaction
+        with sentry_sdk.start_transaction(op="agent_run", name=f"user_message") as transaction:
+            transaction.set_tag("request_id", request_id)
 
-        # 2. SEND TO DEEPSEEK
+            # Add user message to history
+            messages.append({"role": "user", "content": user_input})
+
+            # 2. SEND TO DEEPSEEK
         try:
             response = call_llm(messages=messages, tools=tools)
         except Exception as e:
@@ -466,7 +470,7 @@ def chat():
                     "content": json.dumps(result),
                 })
 
-                        # Send tool results back to LLM for final response
+            # Send tool results back to LLM for final response
             try:
                 response = call_llm(messages=messages, tools=tools)
             except Exception as e:
