@@ -5,10 +5,10 @@
 
 use anyhow::Result;
 use crossterm::event::{self, Event as CEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph, Gauge};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 use std::io::{self, Stdout};
 use std::sync::mpsc::channel;
@@ -243,26 +243,44 @@ fn panel_accent<'a>(_theme: &'a Theme, title: &str, style: Style) -> Block<'a> {
 fn ui(f: &mut ratatui::Frame, app: &App) {
     let theme = Theme::default();
     let size = f.area();
+    let has_welcome = app.show_welcome && app.messages.is_empty();
 
+    // Layout: header + body (no footer border, info lives in body)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // header
-            Constraint::Min(0),    // body
-            Constraint::Length(3), // footer
+            Constraint::Min(0),    // body (messages + input + info)
         ])
         .split(size);
 
     render_header(f, app, &theme, chunks[0]);
 
-    match app.tab {
-        Tab::Chat => render_chat(f, app, &theme, chunks[1]),
-        Tab::Tools => render_tools(f, app, &theme, chunks[1]),
-        Tab::History => render_history(f, app, &theme, chunks[1]),
-        Tab::Config => render_config(f, app, &theme, chunks[1]),
+    if has_welcome {
+        render_welcome(f, app, &theme, chunks[1]);
+        return;
     }
 
-    render_footer(f, app, &theme, chunks[2]);
+    if app.tab == Tab::Chat {
+        render_chat(f, app, &theme, chunks[1]);
+    } else {
+        let body = chunks[1];
+        let body_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(body);
+
+        match app.tab {
+            Tab::Tools => render_tools(f, app, &theme, body_chunks[0]),
+            Tab::History => render_history(f, app, &theme, body_chunks[0]),
+            Tab::Config => render_config(f, app, &theme, body_chunks[0]),
+            _ => {}
+        }
+        render_footer(f, app, &theme, body_chunks[1]);
+    }
 }
 
 fn render_header(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
@@ -292,111 +310,100 @@ fn render_header(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
 }
 
 fn render_chat(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
-    // If no messages and welcome is showing, render welcome card
-    if app.show_welcome && app.messages.is_empty() {
-        render_welcome(f, app, theme, area);
-        return;
-    }
-
+    // Body layout: separator(1) + messages(fill) + separator(1) + input(1) + info(1)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Min(0),    // messages
+            Constraint::Length(1), // separator
+            Constraint::Length(1), // input prompt
+            Constraint::Length(1), // info line
         ])
         .split(area);
 
-    // Messages
     let msg_area = chunks[0];
-    let msg_h = msg_area.height.saturating_sub(2) as usize;
+    let sep_area = chunks[1];
+    let input_area = chunks[2];
+    let info_area = chunks[3];
+
+    // ── Messages (no border, just content) ──────────────────────────
+    let msg_h = msg_area.height as usize;
     let start = app.messages.len().saturating_sub(msg_h + app.scroll);
 
     let mut lines: Vec<Line> = Vec::new();
 
     if app.messages.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("  No messages yet. Press i to start typing.", theme.style_muted())));
+        lines.push(Line::from(Span::styled(
+            "  No messages yet. Press i to start typing.",
+            theme.style_muted(),
+        )));
     } else {
         for msg in app.messages.iter().skip(start).take(msg_h) {
             let prefix = if msg.role == "user" { "\u{25B8} " } else { "" };
+            let prefix_color = if msg.role == "user" { theme.accent_user } else { theme.accent_assistant };
             let msg_lines = markdown::render_message(theme, &msg.content, msg.role == "user");
             for ml in msg_lines {
-                let mut spans = vec![Span::styled(prefix, theme.style_muted())];
+                let mut spans = vec![Span::styled(prefix, Style::default().fg(prefix_color))];
                 spans.extend(ml.spans.into_iter());
                 lines.push(Line::from(spans));
             }
-            lines.push(Line::from("")); // spacing between messages
+            lines.push(Line::from(""));
         }
     }
 
-    // If streaming, show the buffer inline
+    // Streaming buffer
     if app.waiting_response && !app.stream_buffer.is_empty() {
         let stream_lines = markdown::render_message(theme, &app.stream_buffer, false);
         for sl in stream_lines {
-            let mut spans = vec![Span::styled("\u{25B8} ", theme.style_muted())];
+            let mut spans = vec![Span::styled("\u{25B8} ", Style::default().fg(theme.accent_assistant))];
             spans.extend(sl.spans.into_iter());
             lines.push(Line::from(spans));
         }
     }
 
-    // Tool call status
-    match &app.tool_status {
-        ToolStatus::Calling(name) => {
-            let spin = ["\u{25D4}", "\u{25D1}", "\u{25D5}", "\u{25D7}"][(app.typing_spinner % 4) as usize];
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", spin), theme.style_tool()),
-                Span::styled(format!("Calling {}...", name), theme.style_muted()),
-            ]));
-        }
-        ToolStatus::Done(name) => {
-            lines.push(Line::from(vec![
-                Span::styled(" \u{2713} ", theme.style_success()),
-                Span::styled(format!("{} completed", name), theme.style_muted()),
-            ]));
-        }
-        ToolStatus::Idle => {}
-    }
-
     // Thinking indicator
     if app.waiting_response && app.stream_buffer.is_empty() {
-        let dots = match app.typing_spinner % 4 {
-            0 => "   ",
-            1 => ".  ",
-            2 => ".. ",
-            _ => "...",
-        };
-        lines.push(Line::from(Span::styled(
-            format!("  Thinking{}", dots),
-            theme.style_muted(),
-        )));
+        let dots = match app.typing_spinner % 4 { 0 => "   ", 1 => ".  ", 2 => ".. ", _ => "...", };
+        lines.push(Line::from(Span::styled(format!("  Thinking{}", dots), theme.style_muted())));
     }
 
-    f.render_widget(
-        Paragraph::new(lines).block(panel(theme, " Chat ")),
-        msg_area,
-    );
+    f.render_widget(Paragraph::new(lines), msg_area);
 
-    // Input bar
+    // ── Separator line ─────────────────────────────────────────────
+    let sep = Line::from(Span::styled(
+        "\u{2500}".repeat(area.width.saturating_sub(2) as usize),
+        theme.style_muted(),
+    ));
+    f.render_widget(Paragraph::new(sep).style(Style::default().bg(theme.bg_light)), sep_area);
+
+    // ── Input prompt (no border) ──────────────────────────────────
     let input_display = match app.input_mode {
         InputMode::Editing => {
             if app.waiting_response {
                 " Waiting for response...".to_string()
             } else {
-                format!(" {}|", app.input)
+                format!(" \u{276F} {}", app.input)
             }
         }
-        InputMode::Normal => " Press i to type, Enter to send".to_string(),
+        InputMode::Normal => " \u{276F} Press i to type, Enter to send".to_string(),
     };
 
     let input_style = if app.input_mode == InputMode::Editing && !app.waiting_response {
-        theme.style_highlight()
+        Style::default().fg(theme.text_primary).bg(theme.bg_highlight)
     } else {
-        theme.style_muted()
+        Style::default().fg(theme.text_muted)
     };
 
+    f.render_widget(Paragraph::new(input_display).style(input_style), input_area);
+
+    // ── Info line ─────────────────────────────────────────────────
+    let info = match app.input_mode {
+        InputMode::Editing => " Enter: send  |  Esc: cancel",
+        InputMode::Normal => " i: type  |  Enter: send  |  Tab: switch  |  q: quit",
+    };
     f.render_widget(
-        Paragraph::new(input_display).style(input_style).block(panel(theme, " Input ")),
-        chunks[1],
+        Paragraph::new(Line::from(Span::styled(info, theme.style_muted()))).style(Style::default().bg(theme.bg_light)),
+        info_area,
     );
 }
 
@@ -534,16 +541,10 @@ fn render_config(f: &mut ratatui::Frame, _app: &App, theme: &Theme, area: Rect) 
     );
 }
 
-fn render_footer(f: &mut ratatui::Frame, app: &App, theme: &Theme, area: Rect) {
-    let help = match app.input_mode {
-        InputMode::Normal => " i: type  |  q: quit  |  Tab: switch tab  |  \u{2191}\u{2193}: scroll",
-        InputMode::Editing => " Enter: send  |  Esc: cancel",
-    };
-
+fn render_footer(f: &mut ratatui::Frame, _app: &App, theme: &Theme, area: Rect) {
+    let help = " F1 Chat | F2 Tools | F3 History | F4 Config | Tab: switch | q: quit";
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(help, theme.style_muted()))).block(
-            Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(theme.style_border())
-        ),
+        Paragraph::new(Line::from(Span::styled(help, theme.style_muted()))).style(Style::default().bg(theme.bg_light)),
         area,
     );
 }
