@@ -1,0 +1,9 @@
+# ============================
+# Dependencies for the Agent
+# ============================
+# LiteLLM — unified interface to call 100+ LLM APIs (DeepSeek, OpenAI, etc.)
+litellm>=1.60.0
+# psycopg2-binary — PostgreSQL driver for connecting to CockroachDB
+psycopg2-binary>=2.9.9
+# python-dotenv — load secrets from .env file
+python-dotenv>=1.0.0
