@@ -38,6 +38,10 @@ sentry_sdk.init(
     environment="development",
 )
 
+    # Name this agent for Sentry"s AI dashboards
+    sentry_sdk.set_tag("agent.name", "c-db-agent")
+    sentry_sdk.set_tag("agent.version", "1.0")
+
 # Structlog for structured logging
 import structlog
 
@@ -346,14 +350,27 @@ def call_llm(messages: list, tools: list) -> dict:
         logger.debug("llm.messages_preview", index=len(messages)-3+i, role=role, has_tool_calls=has_tool_calls, content=content_preview)
 
     logger.info("llm.calling", message_count=len(messages))
-    response = litellm.completion(
-        model=MODEL_NAME,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-        api_key=DEEPSEEK_API_KEY,
-    )
-    logger.info("llm.responded", has_tool_calls=bool(response.choices[0].message.tool_calls))
+
+    with sentry_sdk.start_span(op="llm", description=MODEL_NAME) as span:
+        span.set_tag("llm.model", MODEL_NAME)
+        response = litellm.completion(
+            model=MODEL_NAME,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            api_key=DEEPSEEK_API_KEY,
+        )
+
+        # Extract token usage if available (DeepSeek returns usage in response)
+        if hasattr(response, "usage") and response.usage:
+            usage = response.usage
+            if hasattr(usage, "prompt_tokens"):
+                span.set_data("llm.tokens.input", usage.prompt_tokens)
+                span.set_data("llm.tokens.output", usage.completion_tokens)
+                span.set_data("llm.tokens.total", usage.total_tokens)
+
+        logger.info("llm.responded", has_tool_calls=bool(response.choices[0].message.tool_calls))
+
     return response
 
 
