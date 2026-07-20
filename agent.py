@@ -421,23 +421,29 @@ def chat():
             continue
 
         # 3. PROCESS THE RESPONSE
-        response_message = response.choices[0].message
+        # Use a while loop to handle multiple rounds of tool calling.
+        # The LLM may need to call tools, get results, then call more tools, etc.
+        while True:
+            response = call_llm(messages=messages, tools=tools)
+            response_message = response.choices[0].message
 
-        # Check if the LLM wants to call a tool
-        if response_message.tool_calls:
-            # The LLM wants to use a tool
-            # Add the assistant's message (with tool_calls) to history
+            # If no tool calls, this is the final text response
+            if not response_message.tool_calls:
+                messages.append(response_message)
+                print(f"Agent: {response_message.content}")
+                break
+
+            # LLM wants to call tools - process them
+            logger.info("tool_calls.detected", count=len(response_message.tool_calls))
             messages.append(response_message)
 
             # Process each tool call
             for tool_call in response_message.tool_calls:
-                # Parse the arguments (they come as a JSON string)
                 try:
                     args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
                     args = {}
 
-                # Execute the tool
                 try:
                     result = handle_tool_call(
                         tool_name=tool_call.function.name,
@@ -447,38 +453,13 @@ def chat():
                     logger.error("tool.execution_failed", tool=tool_call.function.name, error=str(tool_e))
                     result = {"success": False, "error": str(tool_e)}
 
-                # 4. SEND TOOL RESULT BACK TO LLM
-                # This is how tool calling works:
-                #   1. LLM says "I want to call tool X"
-                #   2. We run the tool
-                #   3. We send the result back as a "tool" role message
-                #   4. LLM uses the result to form its final answer
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": json.dumps(result),
                 })
 
-            # Now send everything back to the LLM for the final response
-            try:
-                final_response = call_llm(messages=messages, tools=tools)
-                final_message = final_response.choices[0].message
-
-                # Add the final assistant response to history
-                messages.append(final_message)
-
-                # Print the response
-                print(f"Agent: {final_message.content}")
-
-            except Exception as e:
-                logger.error("llm.final_response_failed", error=str(e))
-                sentry_sdk.capture_exception(e)
-                print("   Error processing tool results")
-
-        else:
-            # No tool calls - direct text response from the LLM
-            messages.append(response_message)
-            print(f"Agent: {response_message.content}")
+            # Continue the while loop - the next iteration will send tool results back to LLM
 
 
 # ENTRY POINT
