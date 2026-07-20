@@ -1,10 +1,8 @@
 //! Application state for c-db Agent TUI.
 //!
-//! This holds the conversation history, tool list, and UI state.
+//! This holds the conversation history, tool list, UI state, and streaming state.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Tool {
     pub name: String,
     pub description: String,
@@ -14,6 +12,13 @@ pub struct Tool {
 pub struct Message {
     pub role: String,
     pub content: String,
+}
+
+#[derive(Debug)]
+pub enum StreamEvent {
+    Token(String),
+    Done,
+    Error(String),
 }
 
 #[derive(Debug)]
@@ -29,6 +34,7 @@ pub struct App {
     pub typing_spinner: u8,
     pub waiting_response: bool,
     pub connected: bool,
+    pub stream_buffer: String, // accumulates streaming tokens
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +65,7 @@ impl App {
             typing_spinner: 0,
             waiting_response: false,
             connected: false,
+            stream_buffer: String::new(),
         }
     }
 
@@ -72,7 +79,7 @@ impl App {
 
     pub fn set_status(&mut self, msg: &str) {
         self.status_msg = msg.to_string();
-        self.status_timer = 20; // Show for ~4 seconds (20 ticks at 200ms)
+        self.status_timer = 20;
     }
 
     pub fn tick(&mut self) {

@@ -6,8 +6,10 @@ The Rust TUI communicates with this backend over HTTP.
 """
 
 from contextlib import asynccontextmanager
+import json as py_json
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import sys
@@ -20,6 +22,9 @@ from tools.registry import registry
 from core.chat_session import ChatSession
 from core.llm_client import LLMClient
 from config import get_settings
+import structlog
+
+logger = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -107,6 +112,97 @@ async def chat(request: ChatRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    Send a message to the agent and stream the response as SSE.
+    
+    Each event is a JSON line with either:
+    - {"token": "text"} for streaming content
+    - {"done": true} when complete
+    - {"error": "msg"} on error
+    """
+    async def event_generator():
+        try:
+            # Add user message to session history
+            chat_session.messages.append({
+                "role": "user",
+                "content": request.message
+            })
+            
+            # Step 1: Non-streaming call to detect tool calls
+            response = llm_client.complete(
+                messages=chat_session.messages,
+                tools=registry.get_schemas()
+            )
+            
+            response_message = response.choices[0].message
+            
+            # Step 2: Handle tool calls (non-streaming)
+            while response_message.tool_calls:
+                chat_session.messages.append(response_message)
+                
+                for tool_call in response_message.tool_calls:
+                    try:
+                        args = py_json.loads(tool_call.function.arguments)
+                    except py_json.JSONDecodeError:
+                        args = {}
+                    
+                    from infrastructure.db_pool import get_connection, return_connection
+                    conn = get_connection()
+                    try:
+                        result = registry.execute(
+                            tool_name=tool_call.function.name,
+                            args=args,
+                            db_conn=conn
+                        )
+                    except Exception as tool_e:
+                        result = {"success": False, "error": str(tool_e)}
+                    finally:
+                        return_connection(conn)
+                    
+                    chat_session.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": py_json.dumps(result),
+                    })
+                
+                # After tools, make another call to get final response
+                response = llm_client.complete(
+                    messages=chat_session.messages,
+                    tools=registry.get_schemas()
+                )
+                response_message = response.choices[0].message
+            
+            # Step 3: Stream the final text response token by token
+            final_content = response_message.content or ""
+            assistant_msg = {"role": "assistant", "content": final_content}
+            chat_session.messages.append(assistant_msg)
+            
+            # Stream chunks of the response
+            chunk_size = 8
+            for i in range(0, len(final_content), chunk_size):
+                token = final_content[i:i+chunk_size]
+                yield f"data: {py_json.dumps({'token': token})}\n\n"
+                import asyncio
+                await asyncio.sleep(0.01)
+            
+            yield f"data: {py_json.dumps({'done': True})}\n\n"
+            
+        except Exception as e:
+            logger.error("chat.stream_error", error=str(e))
+            yield f"data: {py_json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 @app.get("/tools", response_model=List[ToolInfo])
 async def list_tools():

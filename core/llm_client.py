@@ -105,3 +105,64 @@ class LLMClient:
             )
             
             return response
+    
+    @tenacity.retry(
+        wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
+        stop=tenacity.stop_after_attempt(3),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.warning(
+            "llm.stream_retry",
+            attempt=retry_state.attempt_number,
+            wait=retry_state.next_action.sleep,
+        ),
+    )
+    def complete_stream(self, messages: list, tools: list = None):
+        """
+        Call LLM API with streaming. Yields tokens as they arrive.
+        
+        Args:
+            messages: Conversation history
+            tools: Tool definitions (OpenAI format)
+        
+        Yields:
+            str: Text tokens as they arrive from the LLM
+        """
+        logger.info("llm.stream_start", message_count=len(messages))
+        
+        # Build kwargs
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "api_key": self.api_key,
+            "stream": True,
+        }
+        
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        
+        # Call API with streaming
+        response = litellm.completion(**kwargs)
+        
+        full_content = ""
+        tool_calls_detected = False
+        
+        for chunk in response:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+            
+            # Check for content tokens
+            if delta.content:
+                full_content += delta.content
+                yield delta.content
+            
+            # Check for tool calls (we can't stream tool calls)
+            if delta.tool_calls:
+                tool_calls_detected = True
+        
+        logger.info(
+            "llm.stream_end",
+            char_count=len(full_content),
+            has_tool_calls=tool_calls_detected,
+        )

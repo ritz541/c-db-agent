@@ -11,13 +11,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Terminal;
 use std::io::{self, Stdout};
+use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 mod api;
 mod state;
 
 use api::ApiClient;
-use state::{App, InputMode, Tab};
+use state::{App, InputMode, StreamEvent, Tab};
 
 const TICK_RATE: Duration = Duration::from_millis(200);
 
@@ -96,8 +97,37 @@ fn run(
     api: &ApiClient,
 ) -> Result<()> {
     let mut last_tick = Instant::now();
+    let (stream_tx, stream_rx) = channel::<StreamEvent>();
     
     loop {
+        // Check for streaming events
+        while let Ok(event) = stream_rx.try_recv() {
+            match event {
+                StreamEvent::Token(token) => {
+                    app.stream_buffer.push_str(&token);
+                    app.waiting_response = true;
+                }
+                StreamEvent::Done => {
+                    let content = app.stream_buffer.clone();
+                    if !content.is_empty() {
+                        app.add_message("agent", &content);
+                    }
+                    app.stream_buffer.clear();
+                    app.waiting_response = false;
+                    app.set_status("Ready");
+                }
+                StreamEvent::Error(err) => {
+                    let content = app.stream_buffer.clone();
+                    if !content.is_empty() {
+                        app.add_message("agent", &content);
+                    }
+                    app.stream_buffer.clear();
+                    app.waiting_response = false;
+                    app.set_status(&format!("Error: {}", err));
+                }
+            }
+        }
+        
         terminal.draw(|f| ui(f, app))?;
         
         let timeout = TICK_RATE
@@ -107,7 +137,7 @@ fn run(
         if crossterm::event::poll(timeout)? {
             if let CEvent::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if handle_key(key, app, api) {
+                    if handle_key(key, app, api, &stream_tx) {
                         return Ok(());
                     }
                 }
@@ -121,7 +151,12 @@ fn run(
     }
 }
 
-fn handle_key(key: KeyEvent, app: &mut App, api: &ApiClient) -> bool {
+fn handle_key(
+    key: KeyEvent,
+    app: &mut App,
+    api: &ApiClient,
+    stream_tx: &std::sync::mpsc::Sender<StreamEvent>,
+) -> bool {
     // Global quit
     if key.code == KeyCode::Char('q') && app.input_mode == InputMode::Normal {
         return true;
@@ -169,15 +204,10 @@ fn handle_key(key: KeyEvent, app: &mut App, api: &ApiClient) -> bool {
                     app.set_status("Agent is thinking...");
                     
                     if app.connected {
-                        match api.send_message(&input) {
-                            Ok(response) => {
-                                app.add_message("agent", &response);
-                                app.set_status("Ready");
-                            }
-                            Err(e) => {
-                                app.set_status(&format!("Error: {}", e));
-                            }
-                        }
+                        // Use streaming for a real-time token-by-token experience
+                        let tx = stream_tx.clone();
+                        let api = ApiClient::new("http://127.0.0.1:8000");
+                        api.send_message_stream(input, tx);
                     } else {
                         app.add_message("agent", "Backend is offline. Start it with: python api.py");
                         app.set_status("Backend offline");
