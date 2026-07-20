@@ -32,7 +32,7 @@ import tenacity
 import sentry_sdk
 
 sentry_sdk.init(
-    dsn="https://PLACEHOLDER_DSN@oXXX.ingest.sentry.io/XXX",
+    dsn=settings.sentry_dsn,
     send_default_pii=True,
     traces_sample_rate=1.0,  # Set to 0.1 for production
     environment="development",
