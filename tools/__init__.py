@@ -1,2 +1,10 @@
-# This file makes the "tools" folder a Python package.
-# It lets us do:  from tools.calculator import calculate
+"""
+Tools Package
+
+Auto-discovers all tools in this directory.
+Just drop a new tool file here, and it'll be automatically loaded.
+"""
+
+from .registry import registry
+
+__all__ = ["registry"]
