@@ -15,29 +15,36 @@ import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 
 # RESUME
 
 def store_resume(text: str, db_conn, name: str = "default") -> dict:
-    """Store a resume in the database."""
+    """Store a resume in the database. Also saves the PDF path from .env."""
     try:
+        pdf_path = os.getenv("RESUME_PDF_PATH", "")
         with db_conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS resumes (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
                     content TEXT NOT NULL,
+                    pdf_path TEXT DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
             cur.execute("""
-                INSERT INTO resumes (name, content)
-                VALUES (%s, %s)
-                ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content;
-            """, (name, text))
+                INSERT INTO resumes (name, content, pdf_path)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content, pdf_path = EXCLUDED.pdf_path;
+            """, (name, text, pdf_path))
         db_conn.commit()
-        return {"success": True, "message": f"Resume '{name}' saved.", "name": name}
+        msg = f"Resume '{name}' saved."
+        if pdf_path:
+            msg += f" PDF at: {pdf_path}"
+        return {"success": True, "message": msg, "name": name}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -185,7 +192,7 @@ def list_applications(db_conn, status: str = None) -> dict:
 
 def send_email(application_id: int, db_conn) -> dict:
     """
-    Send a drafted application email via Gmail SMTP.
+    Send a drafted application email via Gmail SMTP, with PDF resume attached.
     Fetches the draft from applications table, sends it, updates status to 'sent'.
     """
     try:
@@ -202,13 +209,33 @@ def send_email(application_id: int, db_conn) -> dict:
             if status == "sent":
                 return {"success": False, "error": f"Application {application_id} already sent."}
 
-        # Build the email
+            # Fetch the PDF path from latest resume
+            cur.execute("SELECT pdf_path FROM resumes ORDER BY created_at DESC LIMIT 1")
+            resume_row = cur.fetchone()
+            pdf_path = resume_row[0] if resume_row else ""
+
+        # Build the email with attachment
         subject = f"Application for {role} at {company} - Ritesh Chavan"
-        msg = MIMEMultipart("alternative")
+        msg = MIMEMultipart("mixed")  # mixed allows attachments
         msg["From"] = os.getenv("SMTP_EMAIL")
         msg["To"] = recipient
         msg["Subject"] = subject
+
+        # Attach the cover letter body
         msg.attach(MIMEText(body, "plain"))
+
+        # Attach the PDF resume if the file exists
+        if pdf_path and os.path.isfile(pdf_path):
+            with open(pdf_path, "rb") as f:
+                attachment = MIMEBase("application", "pdf")
+                attachment.set_payload(f.read())
+                encoders.encode_base64(attachment)
+                attachment.add_header(
+                    "Content-Disposition",
+                    "attachment",
+                    filename="Ritesh_Chavan_Resume.pdf",
+                )
+                msg.attach(attachment)
 
         # Send via SMTP
         smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
@@ -227,12 +254,16 @@ def send_email(application_id: int, db_conn) -> dict:
             cur.execute("UPDATE applications SET status = 'sent' WHERE id = %s", (application_id,))
         db_conn.commit()
 
+        attached = ""
+        if pdf_path and os.path.isfile(pdf_path):
+            attached = " (with PDF resume attached)"
+
         return {
             "success": True,
             "application_id": application_id,
             "to": recipient,
             "subject": subject,
-            "message": f"Email sent to {recipient} regarding {role} at {company}!",
+            "message": f"Email sent to {recipient} regarding {role} at {company}!{attached}",
         }
 
     except Exception as e:
