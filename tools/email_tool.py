@@ -26,6 +26,8 @@ from pypdf import PdfReader
 
 logger = structlog.get_logger()
 
+logger = structlog.get_logger()
+
 
 # RESUME
 
@@ -177,7 +179,7 @@ Write a SHORT email body (plain text, no markdown) that:
 3. Is 2-3 short paragraphs max
 4. Ends with: "Best regards, Ritesh Chavan" and links (GitHub: github.com/ritz541, Portfolio: chavanpatil.com)
 
-Output only the email body. Start with "Dear Hiring Manager," or similar.""
+Output only the email body. Start with "Dear Hiring Manager," or similar."""
 
         email_body = _call_llm(prompt)
 

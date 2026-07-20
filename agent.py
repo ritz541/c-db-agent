@@ -464,9 +464,16 @@ def chat():
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": json.dumps(result),
-                }))
+                })
 
-            # Continue the while loop - the next iteration will send tool results back to LLM
+                        # Send tool results back to LLM for final response
+            try:
+                response = call_llm(messages=messages, tools=tools)
+            except Exception as e:
+                logger.error("llm.tool_response_failed", error=str(e))
+                sentry_sdk.capture_exception(e)
+                print("   Error processing tool results")
+                break
 
 # ENTRY POINT
 if __name__ == "__main__":
