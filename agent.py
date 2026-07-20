@@ -27,35 +27,6 @@ import json
 import uuid
 import tenacity
 
-# ── Observability Setup ─────────────────────────────────────────
-# Sentry for error tracking (must be initialized before other imports)
-import sentry_sdk
-
-sentry_sdk.init(
-    dsn=settings.sentry_dsn,
-    send_default_pii=True,
-    traces_sample_rate=1.0,  # Set to 0.1 for production
-    environment="development",
-)
-
-    # Name this agent for Sentry"s AI dashboards
-    sentry_sdk.set_tag("agent.name", "c-db-agent")
-    sentry_sdk.set_tag("agent.version", "1.0")
-
-# Structlog for structured logging
-import structlog
-
-structlog.configure(
-    processors=[
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="ISO"),
-        structlog.dev.ConsoleRenderer(),  # Use JSONRenderer() for production
-    ]
-)
-
-logger = structlog.get_logger()
-
 # ── Load Environment Variables ───────────────────────────────────
 from dotenv import load_dotenv
 load_dotenv()
@@ -78,9 +49,37 @@ try:
     COCKROACHDB_URL = settings.cockroachdb_url
     MODEL_NAME = settings.llm_model
 except Exception as e:
-    logger.error("config.load_failed", error=str(e))
     print(f"Configuration error: {e}")
     sys.exit(1)
+
+# ── Observability Setup ─────────────────────────────────────────
+# Sentry for error tracking (initialized AFTER settings are loaded)
+import sentry_sdk
+
+sentry_sdk.init(
+    dsn=settings.sentry_dsn or "https://placeholder@oXXX.ingest.sentry.io/XXX",
+    send_default_pii=True,
+    traces_sample_rate=1.0,  # Set to 0.1 for production
+    environment="development",
+)
+
+# Name this agent for Sentry's AI dashboards
+sentry_sdk.set_tag("agent.name", "c-db-agent")
+sentry_sdk.set_tag("agent.version", "1.0")
+
+# Structlog for structured logging
+import structlog
+
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="ISO"),
+        structlog.dev.ConsoleRenderer(),  # Use JSONRenderer() for production
+    ]
+)
+
+logger = structlog.get_logger()
 
 # DATABASE CONNECTION
 # Use a connection pool for better performance and reliability.
@@ -312,7 +311,6 @@ def handle_tool_call(tool_name: str, args: dict) -> dict:
         # Return the connection to the pool
         return_db_connection(db_conn)
 
-
 # LLM API CALL WRAPPER
 # Wraps litellm.completion with retry logic using tenacity
 
@@ -370,9 +368,7 @@ def call_llm(messages: list, tools: list) -> dict:
                 span.set_data("llm.tokens.total", usage.total_tokens)
 
         logger.info("llm.responded", has_tool_calls=bool(response.choices[0].message.tool_calls))
-
-    return response
-
+        return response
 
 # SYSTEM PROMPT
 # This tells the LLM who it is and what it can do.
@@ -422,11 +418,6 @@ def chat():
         messages.append({"role": "user", "content": user_input})
 
         # 2. SEND TO DEEPSEEK
-        # LiteLLM handles the API call. We pass:
-        #   - model: "deepseek/deepseek-v4-flash"
-        #   - messages: conversation history
-        #   - tools: the tool definitions
-        #   - tool_choice: "auto" - let the model decide if it needs tools
         try:
             response = call_llm(messages=messages, tools=tools)
         except Exception as e:
@@ -436,11 +427,8 @@ def chat():
             messages.pop()  # Remove the user message that caused the failure
             continue
 
-        # 3. PROCESS THE RESPONSE
-        # Use a while loop to handle multiple rounds of tool calling.
-        # The LLM may need to call tools, get results, then call more tools, etc.
+        # 3. PROCESS THE RESPONSE (handle multiple rounds of tool calls)
         while True:
-            response = call_llm(messages=messages, tools=tools)
             response_message = response.choices[0].message
 
             # If no tool calls, this is the final text response
@@ -455,11 +443,13 @@ def chat():
 
             # Process each tool call
             for tool_call in response_message.tool_calls:
+                # Parse the arguments (they come as a JSON string)
                 try:
                     args = json.loads(tool_call.function.arguments)
                 except json.JSONDecodeError:
                     args = {}
 
+                # Execute the tool
                 try:
                     result = handle_tool_call(
                         tool_name=tool_call.function.name,
@@ -469,14 +459,14 @@ def chat():
                     logger.error("tool.execution_failed", tool=tool_call.function.name, error=str(tool_e))
                     result = {"success": False, "error": str(tool_e)}
 
+                # Send tool result back to LLM
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": json.dumps(result),
-                })
+                }))
 
             # Continue the while loop - the next iteration will send tool results back to LLM
-
 
 # ENTRY POINT
 if __name__ == "__main__":
