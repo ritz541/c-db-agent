@@ -4,6 +4,13 @@ A plugin-based AI agent built with **LiteLLM** and **DeepSeek**, featuring auto-
 
 ## ✨ Features
 
+- **Plugin architecture** — Add tools by dropping a file, zero changes to existing code
+- **Auto-discovery** — Tools are automatically found and registered on startup
+- **Calculator** — Evaluate math expressions, results stored in CockroachDB
+- **Database query** — Natural language → SQL with safety filters (blocks DROP/TRUNCATE/DELETE)
+- **Email tools** — Store resumes, draft cover letters, send via SMTP
+- **Sentry observability** — Error tracking and performance monitoring built-in
+
 ### Current Tools
 
 | Tool | Description |
@@ -100,6 +107,34 @@ SMTP_PORT=587
 # Resume (optional, for auto-loading)
 RESUME_PDF_PATH=/path/to/your/resume.pdf
 ```
+
+---
+
+## 📊 Observability (Sentry)
+
+This project uses **Sentry** for error tracking and performance monitoring. Every tool call and LLM request is instrumented with spans.
+
+**Setup:**
+1. Create a project at [sentry.io](https://sentry.io)
+2. Copy your DSN (`https://xxx@oXXX.ingest.sentry.io/XXX`)
+3. Add it to `.env`:
+```env
+SENTRY_DSN=https://your-dsn-here@oXXX.ingest.sentry.io/XXX
+```
+4. That's it — errors and performance data are captured automatically
+
+**What's tracked:**
+| Event | Sentry Span |
+|-------|-------------|
+| User message | `agent_run` transaction |
+| LLM call | `llm` span (model name, token count) |
+| Tool execution | `tool` span (tool name, args, result) |
+
+The agent also sets tags for filtering:
+- `agent.name`: `c-db-agent`
+- `agent.version`: `1.0`
+
+These show up in Sentry's [AI Agents Dashboard](https://docs.sentry.io/product/ai/agent-analytics/).
 
 ---
 
@@ -286,7 +321,8 @@ c-db-agent/
 │   └── prompts.py
 ├── infrastructure/     # External services
 │   └── db_pool.py
-├── tests/             # Unit tests
+├── tests/             # Pytest tests
+├── test_refactoring.py  # Refactoring verification
 ├── .env.example       # Configuration template
 ├── requirements.txt    # Python dependencies
 └── README.md          # This file
