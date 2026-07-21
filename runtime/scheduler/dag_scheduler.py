@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Any
 import structlog
 
@@ -15,6 +16,7 @@ from core.events.domain import (
 )
 from core.interfaces.scheduler import DAGSchedulerInterface
 from core.models.context import ExecutionContext
+from core.models.metrics import SchedulerMetrics, StepMetrics
 from core.models.planning import Plan, PlanStep
 from core.models.tool import ToolCall, ToolResult
 
@@ -27,16 +29,23 @@ class DAGScheduler(DAGSchedulerInterface):
     def __init__(self, services: RuntimeServices, max_concurrent_tasks: int = 8) -> None:
         self.services = services
         self.max_concurrent_tasks = max_concurrent_tasks
-
     async def execute_plan(
         self,
         plan: Plan,
         context: ExecutionContext | None = None,
     ) -> dict[int, ToolResult | Any]:
         """Execute DAG plan concurrently based on step dependencies and concurrency limits."""
+        start_wall_time = time.time()
         semaphore = asyncio.Semaphore(self.max_concurrent_tasks)
         results: dict[int, ToolResult | Any] = {}
 
+        # Scheduler metrics tracking state
+        scheduled_at: dict[int, float] = {}
+        started_at: dict[int, float] = {}
+        finished_at: dict[int, float] = {}
+        metrics_lock = asyncio.Lock()
+        concurrency_tracker = {"active": 0, "peak": 0}
+        queue_depth_peak = len([s for s in plan.steps if s.status == "pending"])
         # 1. Recover completed/failed step results, and reset cancelled steps for plan resumption
         for step in plan.steps:
             if step.status == "completed":
@@ -104,14 +113,36 @@ class DAGScheduler(DAGSchedulerInterface):
             # 4. Get ready steps and launch tasks
             ready_steps = plan.get_ready_steps()
 
+            if ready_steps:
+                now = time.time()
+                for step in ready_steps:
+                    if step.step_id not in scheduled_at:
+                        scheduled_at[step.step_id] = now
+
+                # Track peak queue depth
+                pending_count = len([s for s in plan.steps if s.status == "pending"])
+                if pending_count > queue_depth_peak:
+                    queue_depth_peak = pending_count
+
             for step in ready_steps:
                 step.status = "running"
                 if self.services and getattr(self.services, "events", None):
                     await self.services.events.publish(StepScheduled(step=step))
 
-                task = asyncio.create_task(
-                    self._run_step(step, plan, context, results, semaphore)
-                )
+                async def runner(s=step):
+                    await self._run_step(
+                        s,
+                        plan,
+                        context,
+                        results,
+                        semaphore,
+                        started_at,
+                        finished_at,
+                        metrics_lock,
+                        concurrency_tracker,
+                    )
+
+                task = asyncio.create_task(runner(step))
                 running_tasks.add(task)
 
             # 5. Cyclic dependency & deadlock detection
@@ -133,6 +164,80 @@ class DAGScheduler(DAGSchedulerInterface):
                     running_tasks, return_when=asyncio.FIRST_COMPLETED
                 )
 
+        # Build telemetry metrics after plan execution finishes
+        end_wall_time = time.time()
+        total_wall_time = max(0.0001, end_wall_time - start_wall_time)
+
+        step_metrics: dict[int, StepMetrics] = {}
+        for step in plan.steps:
+            if step.step_id in started_at:
+                sched = scheduled_at.get(step.step_id, start_wall_time)
+                start = started_at[step.step_id]
+                fin = finished_at.get(step.step_id, start)
+                w_time = max(0.0, start - sched)
+                e_time = max(0.0, fin - start)
+                step_metrics[step.step_id] = StepMetrics(
+                    step_id=step.step_id,
+                    scheduled_at=sched,
+                    started_at=start,
+                    finished_at=fin,
+                    wait_time=w_time,
+                    execution_time=e_time,
+                )
+
+        # Critical path duration computation via dynamic programming
+        memo: dict[int, float] = {}
+        visiting: set[int] = set()
+        step_map_all = {s.step_id: s for s in plan.steps}
+
+        def get_cp(step_id: int) -> float:
+            if step_id in memo:
+                return memo[step_id]
+            if step_id in visiting:
+                return 0.0
+            visiting.add(step_id)
+            step_obj = step_map_all.get(step_id)
+            dur = step_metrics[step_id].execution_time if step_id in step_metrics else 0.0
+            if not step_obj or not step_obj.depends_on:
+                memo[step_id] = dur
+                visiting.remove(step_id)
+                return dur
+            dep_cps = [get_cp(dep_id) for dep_id in step_obj.depends_on if dep_id in step_map_all]
+            max_dep = max(dep_cps) if dep_cps else 0.0
+            val = max_dep + dur
+            visiting.remove(step_id)
+            memo[step_id] = val
+            return val
+
+        critical_path_duration = max((get_cp(step.step_id) for step in plan.steps), default=0.0)
+
+        avg_wait = sum(sm.wait_time for sm in step_metrics.values()) / len(step_metrics) if step_metrics else 0.0
+        avg_exec = sum(sm.execution_time for sm in step_metrics.values()) / len(step_metrics) if step_metrics else 0.0
+        total_exec = sum(sm.execution_time for sm in step_metrics.values())
+
+        peak_concurrency = concurrency_tracker["peak"]
+        if peak_concurrency > 0 and total_wall_time > 0:
+            parallel_efficiency = min(1.0, max(0.0, total_exec / (total_wall_time * peak_concurrency)))
+        else:
+            parallel_efficiency = 0.0
+        run_id = context.run_id if (context and getattr(context, "run_id", None)) else ""
+
+        metrics = SchedulerMetrics(
+            run_id=run_id,
+            total_wall_time=total_wall_time,
+            average_wait_time=avg_wait,
+            average_execution_time=avg_exec,
+            critical_path_duration=critical_path_duration,
+            parallel_efficiency=parallel_efficiency,
+            peak_concurrency=peak_concurrency,
+            queue_depth_peak=queue_depth_peak,
+            retry_count=0,
+            step_metrics=step_metrics,
+        )
+
+        plan.metadata["metrics"] = metrics.model_dump()
+        plan.metadata["metrics_object"] = metrics
+
         return results
 
     async def _run_step(
@@ -142,8 +247,18 @@ class DAGScheduler(DAGSchedulerInterface):
         context: ExecutionContext | None,
         results: dict[int, ToolResult | Any],
         semaphore: asyncio.Semaphore,
+        started_at: dict[int, float],
+        finished_at: dict[int, float],
+        metrics_lock: asyncio.Lock,
+        concurrency_tracker: dict[str, int],
     ) -> None:
         async with semaphore:
+            async with metrics_lock:
+                started_at[step.step_id] = time.time()
+                concurrency_tracker["active"] += 1
+                if concurrency_tracker["active"] > concurrency_tracker["peak"]:
+                    concurrency_tracker["peak"] = concurrency_tracker["active"]
+
             # Re-check cancellation token before start
             if context and context.cancellation_token and context.cancellation_token.check_cancelled():
                 step.status = "cancelled"
@@ -151,6 +266,8 @@ class DAGScheduler(DAGSchedulerInterface):
                     await self.services.events.publish(
                         StepCancelled(step=step, reason="Execution cancelled before start")
                     )
+                async with metrics_lock:
+                    finished_at[step.step_id] = time.time()
                 return
 
             if self.services and getattr(self.services, "events", None):
@@ -228,3 +345,7 @@ class DAGScheduler(DAGSchedulerInterface):
                 results[step.step_id] = res_err
                 if self.services and getattr(self.services, "events", None):
                     await self.services.events.publish(StepFailed(step=step, error=str(e)))
+            finally:
+                async with metrics_lock:
+                    finished_at[step.step_id] = time.time()
+                    concurrency_tracker["active"] -= 1

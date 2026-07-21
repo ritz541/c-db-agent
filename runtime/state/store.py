@@ -1,83 +1,68 @@
 import asyncio
 from typing import Any
 from core.events.base import Event
-from core.events.domain import (
-    MessageReceived,
-    MessageSent,
-    PlanCreated,
-    ToolFailed,
-    ToolFinished,
-    ToolStarted,
-)
-from core.events.system import RuntimeStarted, RuntimeStopped
 from core.interfaces.event_bus import EventBusInterface
 from core.interfaces.state_store import StateStoreInterface
-from runtime.state.models import AgentSessionState, RunState, ToolExecutionState
+from runtime.state.models import AgentSessionState, RunState, StateSnapshot, ToolExecutionState
+from runtime.state.reducer import reduce_state
 
 
 class StateStore(StateStoreInterface):
-    """Reactive StateStore keeping single source of truth updated from domain events."""
+    """Reactive StateStore keeping single source of truth updated from domain events using immutable StateSnapshots."""
 
     def __init__(self, session_id: str = "default_session", user_id: str = "default_user") -> None:
-        self._lock = asyncio.Lock()
-        self.session_state = AgentSessionState(session_id=session_id, user_id=user_id)
-        self.tool_state = ToolExecutionState()
-        self.run_state = RunState()
+        initial_session = AgentSessionState(session_id=session_id, user_id=user_id)
+        initial_tools = ToolExecutionState()
+        initial_run = RunState()
+        self._current_snapshot = StateSnapshot(
+            run_id="",
+            sequence_number=0,
+            session=initial_session,
+            tools=initial_tools,
+            run=initial_run,
+        )
+        self._history: list[StateSnapshot] = [self._current_snapshot]
+
+    @property
+    def session_state(self) -> AgentSessionState:
+        return self._current_snapshot.session
+
+    @property
+    def tool_state(self) -> ToolExecutionState:
+        return self._current_snapshot.tools
+
+    @property
+    def run_state(self) -> RunState:
+        return self._current_snapshot.run
+
     def register(self, event_bus: EventBusInterface) -> None:
         """Register state store handler with event bus for all events."""
         event_bus.subscribe(Event, self.handle_event)
 
     async def handle_event(self, event: Event) -> None:
-        async with self._lock:
-            if event.context and event.context.session_id:
-                self.session_state.session_id = event.context.session_id
-            if event.context and event.context.user_id:
-                self.session_state.user_id = event.context.user_id
-            if event.context and event.context.run_id:
-                self.run_state.run_id = event.context.run_id
+        """Update internal state snapshot in response to an event using pure reducer."""
+        self._current_snapshot = reduce_state(self._current_snapshot, event)
+        self._history.append(self._current_snapshot)
 
-            if isinstance(event, (MessageReceived, MessageSent)):
-                self.session_state.messages.append(event.message)
-            elif isinstance(event, PlanCreated):
-                self.session_state.active_plan = event.plan
-            elif isinstance(event, ToolStarted):
-                self.tool_state.tool_calls_count += 1
-                self.run_state.current_step = f"Executing tool: {event.tool_call.name}"
-            elif isinstance(event, ToolFinished):
-                self.tool_state.tool_success_count += 1
-                self.tool_state.history.append(
-                    {
-                        "tool_call_id": event.tool_call.id,
-                        "name": event.tool_call.name,
-                        "success": True,
-                        "output": event.result.output,
-                    }
-                )
-                self.run_state.current_step = None
-            elif isinstance(event, ToolFailed):
-                self.tool_state.tool_failure_count += 1
-                self.tool_state.history.append(
-                    {
-                        "tool_call_id": event.tool_call.id,
-                        "name": event.tool_call.name,
-                        "success": False,
-                        "error": event.error,
-                    }
-                )
-                self.run_state.current_step = None
-            elif isinstance(event, RuntimeStarted):
-                self.run_state.status = "running"
-                self.run_state.run_id = event.runtime_id
-                self.run_state.turn_count = 0
-                self.run_state.last_error = None
-            elif isinstance(event, RuntimeStopped):
-                if event.reason == "error":
-                    self.run_state.status = "failed"
-                else:
-                    self.run_state.status = "completed"
+    def get_snapshot(self) -> StateSnapshot:
+        """Return the current immutable StateSnapshot."""
+        return self._current_snapshot
+
+    def get_history(self) -> list[StateSnapshot]:
+        """Return the list of all historical StateSnapshots."""
+        return list(self._history)
+
+    def get_snapshot_at(self, sequence_number: int) -> StateSnapshot | None:
+        """Return historical snapshot with matching sequence_number if found."""
+        for snapshot in self._history:
+            if snapshot.sequence_number == sequence_number:
+                return snapshot
+        return None
+
     def get_state(self) -> dict[str, Any]:
+        """Return state dictionary representation of current snapshot."""
         return {
-            "session": self.session_state.model_dump(),
-            "tools": self.tool_state.model_dump(),
-            "run": self.run_state.model_dump(),
+            "session": self._current_snapshot.session.model_dump(),
+            "tools": self._current_snapshot.tools.model_dump(),
+            "run": self._current_snapshot.run.model_dump(),
         }

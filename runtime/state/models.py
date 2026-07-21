@@ -1,5 +1,6 @@
+import time
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from core.models.message import AgentMessage
 from core.models.planning import Plan
 
@@ -25,3 +26,13 @@ class RunState(BaseModel):
     turn_count: int = 0
     current_step: str | None = None
     last_error: str | None = None
+
+
+class StateSnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    run_id: str = ""
+    sequence_number: int = 0
+    session: AgentSessionState
+    tools: ToolExecutionState
+    run: RunState
+    timestamp: float = Field(default_factory=time.time)
