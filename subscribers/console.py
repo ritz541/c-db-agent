@@ -42,7 +42,7 @@ class ConsoleSubscriber(BaseSubscriber):
 
     def on_message_sent(self, event: MessageSent) -> None:
         content = event.message.content
-        if content:
+        if content and event.message.role == "assistant":
             self.console.print(Panel(content, title="Assistant", border_style="green"))
 
     def on_plan_created(self, event: PlanCreated) -> None:

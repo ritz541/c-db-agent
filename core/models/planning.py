@@ -1,3 +1,10 @@
+from enum import Enum
+
+
+class PlanCategory(str, Enum):
+    GENERAL = "general"
+    SIMPLE_RETRIEVAL = "simple_retrieval"
+
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -20,6 +27,7 @@ class PlanStep(BaseModel):
 class Plan(BaseModel):
     plan_id: str
     goal: str
+    category: PlanCategory = PlanCategory.GENERAL
     steps: list[PlanStep] = Field(default_factory=list)
     completed: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)

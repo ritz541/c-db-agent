@@ -5,7 +5,7 @@ from core.interfaces.llm import LLMProviderInterface
 from core.interfaces.planner import PlannerInterface
 from core.models.context import ExecutionContext
 from core.models.message import AgentMessage
-from core.models.planning import Plan, PlanStep
+from core.models.planning import Plan, PlanCategory, PlanStep
 from core.models.tool import ToolMetadata
 
 logger = structlog.get_logger(__name__)
@@ -27,24 +27,10 @@ class DirectPlanner(PlannerInterface):
         plan_id = str(uuid4())
         steps: list[PlanStep] = []
 
-        STOP_WORDS = {
-            "a", "an", "the", "in", "on", "at", "to", "of", "for", "is", "are", "be",
-            "by", "with", "or", "and", "so", "my", "me", "you", "your", "what", "how",
-            "can", "do", "does", "did", "it", "this", "that", "i", "we", "he", "she",
-        }
-
         matching_tool = None
-        goal_words = set(goal.lower().split())
+        goal_lower = goal.lower()
         for tool in tools:
-            if tool.name in goal.lower():
-                matching_tool = tool.name
-                break
-            desc_keywords = [
-                w.strip(".,!?()[]{}").lower()
-                for w in tool.description.split()[:5]
-            ]
-            meaningful_keywords = [w for w in desc_keywords if w and w not in STOP_WORDS and len(w) > 2]
-            if any(kw in goal_words for kw in meaningful_keywords):
+            if tool.name.lower() in goal_lower:
                 matching_tool = tool.name
                 break
         steps.append(
@@ -57,11 +43,17 @@ class DirectPlanner(PlannerInterface):
             )
         )
 
+        is_simple_retrieval = matching_tool is not None and len(steps) == 1
+        category = PlanCategory.SIMPLE_RETRIEVAL if is_simple_retrieval else PlanCategory.GENERAL
+        metadata = {"single_pass": True} if is_simple_retrieval else {}
+
         plan = Plan(
             plan_id=plan_id,
             goal=goal,
+            category=category,
             steps=steps,
             completed=False,
+            metadata=metadata,
         )
         logger.info("planner.plan_created", plan_id=plan_id, goal=goal)
         return plan
