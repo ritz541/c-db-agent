@@ -46,6 +46,26 @@ class TestStoreResume:
         assert result["success"] is False
         assert "error" in result
 
+    def test_resume_already_up_to_date(self, tool, mock_db):
+        conn, cursor = mock_db
+        import datetime
+        from unittest.mock import patch
+        
+        # Simulate existing resume with same mtime
+        mock_mtime = datetime.datetime.now(datetime.timezone.utc)
+        cursor.fetchone.side_effect = [
+            (mock_mtime,),  # existing resume with mtime
+        ]
+        
+        with patch("tools.email.store_resume.os.getenv", return_value="/fake/resume.pdf"):
+            with patch("tools.email.store_resume.os.path.isfile", return_value=True):
+                with patch("tools.email.store_resume.os.path.getmtime", return_value=mock_mtime.timestamp()):
+                    result = tool.execute(db_conn=conn, text="My resume")
+        
+        # Should skip re-insert since PDF hasn't changed
+        assert result["success"] is True
+        assert "up-to-date" in result["message"].lower()
+
 
 # ── ListResumesTool ──────────────────────────────────────────────────
 
