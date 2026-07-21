@@ -6,7 +6,7 @@ Uses TinyFish API for web search and content extraction.
 import os
 import requests
 import structlog
-from ..base import BaseTool
+from tools.base import BaseTool
 
 logger = structlog.get_logger()
 
