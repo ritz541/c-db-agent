@@ -22,6 +22,7 @@ from runtime.planning.direct_planner import DirectPlanner
 from runtime.state.store import StateStore
 from runtime.tasks.task_manager import TaskManager
 from runtime.scheduler.dag_scheduler import DAGScheduler
+from runtime.memory.service import QdrantMemoryService
 
 
 class AgentBuilder:
@@ -112,6 +113,7 @@ class AgentBuilder:
         task_manager = self._task_manager or TaskManager(event_bus=event_bus)
         llm = self._llm or LiteLLMProvider()
         planner = self._planner or DirectPlanner(llm_provider=llm)
+        memory = self._memory or QdrantMemoryService()
 
         executor = self._executor or ToolExecutor()
         for t in self._tools:
@@ -125,7 +127,7 @@ class AgentBuilder:
             events=event_bus,
             state_store=state_store,
             task_manager=task_manager,
-            memory=self._memory,
+            memory=memory,
             planner=planner,
             executor=executor,
             scheduler=self._scheduler,
