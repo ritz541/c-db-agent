@@ -1,5 +1,3 @@
-"""Configuration module re-exporting config/settings.py for backward compatibility."""
-
 from config.settings import Settings, get_settings, validate_settings
 
 __all__ = ["Settings", "get_settings", "validate_settings"]

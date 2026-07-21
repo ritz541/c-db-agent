@@ -1,87 +1,63 @@
-"""
-Base class for all tools. Defines the contract that all tools must follow.
-
-This enables a plugin-style architecture where adding a new tool = create a file,
-no changes to existing code.
-"""
-
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any
+from core.interfaces.tool import ToolInterface
+from core.models.context import ExecutionContext
+from core.models.tool import ToolMetadata, ToolResult
 
 
-class BaseTool(ABC):
-    """
-    Abstract base class for tools.
-    
-    All tools must inherit from this class and implement:
-    - get_name(): Tool name (must match what the LLM will call)
-    - get_description(): Human-readable description for the LLM
-    - get_parameters(): OpenAI-format parameter schema
-    - execute(): Actually run the tool
-    """
-    
+class BaseTool(ToolInterface, ABC):
+    """Base class for tools implementing core ToolInterface and supporting capabilities."""
+
+    def get_capabilities(self) -> set[str]:
+        """Return capability tags (e.g. {'database', 'network', 'filesystem'})."""
+        return set()
+
+    def get_category(self) -> str:
+        """Return tool category."""
+        return "general"
+
+    @property
+    def metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name=self.get_name(),
+            description=self.get_description(),
+            category=self.get_category(),
+            capabilities=self.get_capabilities(),
+            parameters=self.get_parameters(),
+        )
+
     @abstractmethod
     def get_name(self) -> str:
-        """
-        Return the tool name.
-        
-        This must match the function name that the LLM will use to call the tool.
-        
-        Returns:
-            str: Tool name (e.g., "calculate", "query_database")
-        """
+        """Return the tool name."""
         pass
-    
+
     @abstractmethod
     def get_description(self) -> str:
-        """
-        Return the tool description for the LLM.
-        
-        This is what the LLM reads to decide whether to use the tool.
-        
-        Returns:
-            str: Description of what the tool does
-        """
+        """Return the tool description for the LLM."""
         pass
-    
+
     @abstractmethod
-    def get_parameters(self) -> Dict[str, Any]:
-        """
-        Return the parameter schema in OpenAI format.
-        
-        Returns:
-            dict: Parameter schema with "type", "properties", "required" keys
-        """
+    def get_parameters(self) -> dict[str, Any]:
+        """Return the parameter schema in OpenAI format."""
         pass
-    
+
     @abstractmethod
-    def execute(self, db_conn, **kwargs) -> Dict[str, Any]:
-        """
-        Execute the tool with the given arguments.
-        
-        Args:
-            db_conn: Database connection from the pool
-            **kwargs: Tool-specific arguments
-        
-        Returns:
-            dict: Result with at least a "success" key
-        """
+    def execute(
+        self,
+        db_conn: Any = None,
+        context: ExecutionContext | None = None,
+        **kwargs: Any,
+    ) -> ToolResult | dict[str, Any] | str:
+        """Execute tool logic."""
         pass
-    
-    def get_schema(self) -> Dict[str, Any]:
-        """
-        Generate OpenAI tool schema from the metadata above.
-        
-        This is used to tell the LLM what tools are available.
-        
-        Returns:
-            dict: OpenAI-format tool schema
-        """
+
+    def get_schema(self) -> dict[str, Any]:
+        """Generate OpenAI tool schema for backward compatibility."""
         return {
             "type": "function",
             "function": {
                 "name": self.get_name(),
                 "description": self.get_description(),
-                "parameters": self.get_parameters()
-            }
+                "parameters": self.get_parameters(),
+            },
         }

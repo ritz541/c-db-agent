@@ -34,6 +34,9 @@ class CalculatorTool(BaseTool):
     """
     Tool for evaluating math expressions and storing results in DB.
     """
+    def get_capabilities(self) -> set[str]:
+        return {"math", "database"}
+
     
     def get_name(self) -> str:
         return "calculate"
@@ -57,7 +60,7 @@ class CalculatorTool(BaseTool):
             "required": ["expression"]
         }
     
-    def execute(self, db_conn, expression: str) -> dict:
+    def execute(self, db_conn=None, expression: str = "", context=None, **kwargs) -> dict:
         """
         Evaluate a math expression and store it in the database.
         
@@ -84,25 +87,33 @@ class CalculatorTool(BaseTool):
             result = eval(expression, {"__builtins__": {}}, allowed_names)
             logger.info("calculate.success", expression=expression, result=str(result))
 
-            # Ensure table exists (fallback for schema manager issues)
-            with db_conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS calculations (
-                        id SERIAL PRIMARY KEY,
-                        expression TEXT NOT NULL,
-                        result TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-            
-            # Store result in database
-            with db_conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO calculations (expression, result) VALUES (%s, %s)",
-                    (expression, str(result)),
-                )
-            db_conn.commit()
-            logger.info("calculate.stored_in_db", expression=expression)
+            stored_in_db = False
+            if db_conn:
+                with db_conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS calculations (
+                            id SERIAL PRIMARY KEY,
+                            expression TEXT NOT NULL,
+                            result TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                with db_conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO calculations (expression, result) VALUES (%s, %s)",
+                        (expression, str(result)),
+                    )
+                db_conn.commit()
+                stored_in_db = True
+                logger.info("calculate.stored_in_db", expression=expression)
+
+            return {
+                "success": True,
+                "expression": expression,
+                "result": str(result),
+                "stored_in_db": stored_in_db,
+                "message": f"{expression} = {result}" + (" (saved to DB)" if stored_in_db else ""),
+            }
 
             return {
                 "success": True,
