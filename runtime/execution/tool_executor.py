@@ -47,10 +47,36 @@ class ToolExecutor(ExecutorInterface):
                 error=err_msg,
             )
 
+        db_conn = None
+        should_return_conn = False
+        try:
+            from infrastructure.db_pool import get_connection
+            db_conn = get_connection()
+            should_return_conn = True
+        except Exception:
+            pass
+
         try:
             logger.info("tool_executor.executing", tool_name=tool_call.name)
             args = tool_call.arguments or {}
-            res = tool.execute(context=context, **args)
+
+            sig = inspect.signature(tool.execute)
+            has_var_kw = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in sig.parameters.values()
+            )
+
+            exec_kwargs: dict[str, Any] = {}
+            if "db_conn" in sig.parameters or has_var_kw:
+                exec_kwargs["db_conn"] = db_conn
+            if "context" in sig.parameters or has_var_kw:
+                exec_kwargs["context"] = context
+
+            for k, v in args.items():
+                if k in sig.parameters or has_var_kw:
+                    exec_kwargs[k] = v
+
+            res = tool.execute(**exec_kwargs)
             if inspect.isawaitable(res):
                 res = await res
 
@@ -60,7 +86,7 @@ class ToolExecutor(ExecutorInterface):
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     success=res.get("success", True),
-                    output=str(res.get("output", res)),
+                    output=str(res.get("output", res.get("message", res))),
                     error=res.get("error"),
                     metadata=res.get("metadata", {}),
                 )
@@ -79,3 +105,10 @@ class ToolExecutor(ExecutorInterface):
                 output="",
                 error=err_str,
             )
+        finally:
+            if db_conn and should_return_conn:
+                try:
+                    from infrastructure.db_pool import return_connection
+                    return_connection(db_conn)
+                except Exception:
+                    pass

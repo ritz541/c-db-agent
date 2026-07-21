@@ -138,13 +138,18 @@ class RuntimeEngine(RuntimeEngineInterface):
                     context=ctx,
                 )
 
-                if response.content:
-                    assistant_msg = AgentMessage(role="assistant", content=response.content)
+                if response.content or response.tool_calls:
+                    assistant_msg = AgentMessage(
+                        role="assistant",
+                        content=response.content or "",
+                        tool_calls=response.tool_calls if response.tool_calls else None,
+                    )
                     history.append(assistant_msg)
                     await self.services.events.publish(
                         MessageSent(message=assistant_msg, context=ctx, priority=EventPriority.INFO)
                     )
-                    final_output = response.content
+                    if response.content:
+                        final_output = response.content
 
                 if not response.tool_calls:
                     # Engine finished execution
