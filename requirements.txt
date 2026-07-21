@@ -19,3 +19,5 @@ pydantic-settings>=2.0.0
 pytest>=8.0.0
 # rich — markdown rendering in terminal
 rich>=15.0.0
+# sqlglot — SQL parsing and AST validation for security
+sqlglot>=25.0.0

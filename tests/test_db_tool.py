@@ -23,6 +23,9 @@ class TestIsSafeQuery:
     def test_create_table_is_safe(self):
         assert is_safe_query("CREATE TABLE IF NOT EXISTS items (id SERIAL)") is True
 
+    def test_alter_add_is_safe(self):
+        assert is_safe_query("ALTER TABLE calculations ADD COLUMN notes STRING") is True
+
     def test_drop_table_blocked(self):
         assert is_safe_query("DROP TABLE calculations") is False
 
@@ -45,6 +48,14 @@ class TestIsSafeQuery:
     def test_case_insensitive(self):
         assert is_safe_query("drop table calculations") is False
         assert is_safe_query("select * from calculations") is True
+
+    def test_obfuscated_drop_blocked(self):
+        # Whitespace/comment obfuscation should fail parsing
+        assert is_safe_query("DR/**/OP TABLE calculations") is False
+
+    def test_alter_drop_blocked(self):
+        # ALTER with DROP should be blocked even if statement type is Alter
+        assert is_safe_query("ALTER TABLE calculations DROP COLUMN expr") is False
 
 
 # ── Tests for _serialize_value() ─────────────────────────────────────

@@ -16,26 +16,15 @@ Safety:
   - This gives you flexibility while preventing accidental disasters.
 """
 
-import re
 import traceback
 import datetime
 from decimal import Decimal
 import structlog
+import sqlglot
 from .base import BaseTool
 
 
 logger = structlog.get_logger()
-
-
-# ── BLOCKED SQL STATEMENTS ─────────────────────────────────────────────
-# These patterns are NOT allowed — they're too destructive to run blindly.
-BLOCKED_PATTERNS = [
-    r"\bDROP\s+(TABLE|DATABASE|SCHEMA|INDEX|VIEW)\b",
-    r"\bTRUNCATE\b",
-    r"\bDELETE\s+FROM\b",
-    r"\bALTER\s+(TABLE|DATABASE|SCHEMA)\s+DROP\b",
-    r"\bUPDATE\b",  # Update without WHERE is dangerous; block all for safety
-]
 
 
 def _serialize_value(value):
@@ -60,20 +49,56 @@ def _serialize_value(value):
 
 def is_safe_query(sql: str) -> bool:
     """
-    Check if the SQL query is safe to execute.
-
-    We allow SELECT, INSERT, CREATE TABLE, ALTER TABLE ADD, etc.
-    We block destructive operations like DROP, TRUNCATE, DELETE.
+    Check if the SQL query is safe to execute using AST parsing.
+    
+    We parse the SQL and whitelist allowed statement types. This catches
+    both explicit and obfuscated destructive operations.
+    
+    Args:
+        sql: The SQL query to validate
+        
+    Returns:
+        bool: True if the query is safe to execute
     """
-    # Remove comments and normalize whitespace for checking
-    cleaned = re.sub(r"--.*$", "", sql, flags=re.MULTILINE).strip().upper()
-
-    # Check against blocked patterns
-    for pattern in BLOCKED_PATTERNS:
-        if re.search(pattern, cleaned):
-            logger.warning("db.query_blocked", sql=sql[:100], pattern=pattern)
+    try:
+        # Parse SQL into AST - this normalizes/obfuscates attacks automatically
+        # Use postgres dialect since CockroachDB is wire-compatible
+        parsed = sqlglot.parse_one(sql, read="postgres")
+        
+        # Get the statement type (e.g., "Select", "Insert", "Drop")
+        # sqlglot uses CamelCase class names
+        stmt_type = type(parsed).__name__
+        
+        # Check for destructive operations
+        if stmt_type in ("Drop", "Truncate", "Delete"):
+            logger.warning("db.query_blocked", sql=sql[:100], reason=f"destructive: {stmt_type}")
             return False
-    return True
+        
+        # For ALTER statements, only allow TABLE with ADD actions (no DROP)
+        if stmt_type == "Alter":
+            # Check if it's ALTER TABLE (not ALTER DATABASE, etc.)
+            kind = getattr(parsed, "kind", None)
+            if kind and str(kind).upper() != "TABLE":
+                logger.warning("db.query_blocked", sql=sql[:100], reason=f"alter not table: {kind}")
+                return False
+            # Check if it contains DROP actions
+            sql_upper = sql.upper()
+            if "DROP" in sql_upper:
+                logger.warning("db.query_blocked", sql=sql[:100], reason="alter contains DROP")
+                return False
+        
+        # Whitelist allowed statements (CamelCase matches sqlglot class names)
+        ALLOWED = {"Select", "Insert", "Create", "CreateTable", "CreateIndex", "CreateView", "Alter"}
+        if stmt_type not in ALLOWED:
+            logger.warning("db.query_blocked", sql=sql[:100], reason=f"not allowed: {stmt_type}")
+            return False
+            
+        return True
+        
+    except Exception as e:
+        # Parse errors mean the SQL is malformed or obfuscated maliciously
+        logger.warning("db.query_parse_failed", sql=sql[:100], error=str(e))
+        return False
 
 
 class DatabaseQueryTool(BaseTool):
