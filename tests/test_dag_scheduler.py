@@ -334,3 +334,29 @@ async def test_cancellation_and_resumption_recovery():
     results_step1 = await scheduler.execute_plan(plan, context=ctx)
     assert plan.steps[0].status == "completed"
     assert plan.steps[1].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_unmatched_tool_name_defaults_to_custom_step():
+    """Verify steps without tool_name execute safely as custom steps without failing on missing tool."""
+    event_bus = EventBus()
+    state_store = StateStore()
+    executor = MockSlowExecutor()
+
+    services = RuntimeServices(
+        llm=None,
+        events=event_bus,
+        state_store=state_store,
+        task_manager=None,
+        executor=executor,
+    )
+    scheduler = DAGScheduler(services=services, max_concurrent_tasks=2)
+
+    steps = [
+        PlanStep(step_id=1, description="Process goal: greeting", tool_name=None, node_type="custom"),
+    ]
+    plan = Plan(plan_id="plan_no_tool", goal="greeting", steps=steps)
+
+    results = await scheduler.execute_plan(plan)
+    assert plan.steps[0].status == "completed"
+    assert plan.steps[0].completed is True

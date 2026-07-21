@@ -41,6 +41,7 @@ class DirectPlanner(PlannerInterface):
                 step_id=1,
                 description=f"Process goal: {goal}",
                 tool_name=matching_tool,
+                node_type="tool" if matching_tool else "custom",
                 completed=False,
             )
         )

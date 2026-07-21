@@ -283,7 +283,7 @@ class DAGScheduler(DAGSchedulerInterface):
                         success=True,
                         output=output_text,
                     )
-                elif (step.node_type == "tool" or step.tool_name) and getattr(self.services, "executor", None):
+                elif (step.tool_name or (step.node_type == "tool" and step.tool_name)) and getattr(self.services, "executor", None):
                     tool_call = ToolCall(
                         id=f"step_{step.step_id}",
                         name=step.tool_name or step.description,
