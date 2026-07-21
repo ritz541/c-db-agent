@@ -185,7 +185,7 @@ class QdrantMemoryService(MemoryService):
     ) -> str:
         """Store a new memory in Qdrant."""
         if not self._initialized:
-            self._ensure_collection()
+            await asyncio.to_thread(self._ensure_collection)
 
         memory_id = str(uuid.uuid4())
         embedding = await self._embed_async(content)
@@ -195,6 +195,7 @@ class QdrantMemoryService(MemoryService):
             id=memory_id,
             vector=embedding,
             payload={
+                "memory_id": memory_id,
                 "content": content,
                 "memory_type": memory_type,
                 "importance": importance,
@@ -208,7 +209,8 @@ class QdrantMemoryService(MemoryService):
             },
         )
 
-        self.client.upsert(
+        await asyncio.to_thread(
+            self.client.upsert,
             collection_name=self.collection_name,
             points=[point],
         )
@@ -245,12 +247,13 @@ class QdrantMemoryService(MemoryService):
     ) -> list[dict]:
         """Retrieve relevant memories using vector similarity search."""
         if not self._initialized:
-            self._ensure_collection()
+            await asyncio.to_thread(self._ensure_collection)
 
         embedding = await self._embed_async(query)
         query_filter = self._make_filter(user_id, memory_types)
 
-        results = self.client.query_points(
+        results = await asyncio.to_thread(
+            self.client.query_points,
             collection_name=self.collection_name,
             query=embedding,
             query_filter=query_filter,
@@ -286,7 +289,7 @@ class QdrantMemoryService(MemoryService):
 
     async def _update_access_counts(self, updates: list[tuple], accessed_at: str):
         """Update last_accessed and times_retrieved for retrieved memories."""
-        try:
+        def _apply_updates():
             for point_id, count in updates:
                 self.client.set_payload(
                     collection_name=self.collection_name,
@@ -296,9 +299,10 @@ class QdrantMemoryService(MemoryService):
                     },
                     points=[point_id],
                 )
+        try:
+            await asyncio.to_thread(_apply_updates)
         except Exception as e:
             logger.warning("memory.access_update_failed", error=str(e))
-
     async def update(
         self,
         target_memory_id: str,
@@ -307,17 +311,28 @@ class QdrantMemoryService(MemoryService):
     ) -> bool:
         """Update an existing memory's content and optionally its tags."""
         try:
-            # Get existing point to preserve embedding
-            scroll_result = self.client.scroll(
+            # First try direct point ID retrieval
+            points = await asyncio.to_thread(
+                self.client.retrieve,
                 collection_name=self.collection_name,
-                scroll_filter=Filter(must=[
-                    FieldCondition(key="memory_id", match=MatchValue(value=target_memory_id)),
-                ]),
-                limit=1,
+                ids=[target_memory_id],
                 with_payload=True,
                 with_vectors=True,
             )
-            points, _ = scroll_result
+            if not points:
+                # Fallback to scroll by payload memory_id
+                scroll_result = await asyncio.to_thread(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=Filter(must=[
+                        FieldCondition(key="memory_id", match=MatchValue(value=target_memory_id)),
+                    ]),
+                    limit=1,
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                points, _ = scroll_result
+
             if not points:
                 logger.warning("memory.update_target_not_found", target_memory_id=target_memory_id)
                 return False
@@ -338,7 +353,8 @@ class QdrantMemoryService(MemoryService):
                 payload=old_payload,
             )
 
-            self.client.upsert(
+            await asyncio.to_thread(
+                self.client.upsert,
                 collection_name=self.collection_name,
                 points=[updated_point],
             )
@@ -352,22 +368,33 @@ class QdrantMemoryService(MemoryService):
     async def delete(self, memory_id: str) -> bool:
         """Delete a memory by ID."""
         try:
-            # Re-fetch the internal point IDs
-            scroll_result = self.client.scroll(
+            points = await asyncio.to_thread(
+                self.client.retrieve,
                 collection_name=self.collection_name,
-                scroll_filter=Filter(must=[
-                    FieldCondition(key="memory_id", match=MatchValue(value=memory_id)),
-                ]),
-                limit=1,
+                ids=[memory_id],
                 with_payload=False,
                 with_vectors=False,
             )
-            points, _ = scroll_result
+            if not points:
+                # Fallback to scroll by payload memory_id
+                scroll_result = await asyncio.to_thread(
+                    self.client.scroll,
+                    collection_name=self.collection_name,
+                    scroll_filter=Filter(must=[
+                        FieldCondition(key="memory_id", match=MatchValue(value=memory_id)),
+                    ]),
+                    limit=1,
+                    with_payload=False,
+                    with_vectors=False,
+                )
+                points, _ = scroll_result
+
             if not points:
                 return False
 
             internal_ids = [p.id for p in points]
-            self.client.delete(
+            await asyncio.to_thread(
+                self.client.delete,
                 collection_name=self.collection_name,
                 points_selector=PointIdsList(points=internal_ids),
             )
@@ -377,7 +404,6 @@ class QdrantMemoryService(MemoryService):
         except Exception as e:
             logger.error("memory.delete_failed", error=str(e))
             return False
-
     async def consolidate(self) -> int:
         """Consolidate duplicate or stale memories. Placeholder for future use."""
         logger.info("memory.consolidate_called", message="Not yet implemented — placeholder")

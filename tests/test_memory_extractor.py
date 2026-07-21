@@ -421,3 +421,31 @@ class TestExtractMemoryDefaults:
         assert result[0]["memory_type"] == "episodic"  # default
         assert result[0]["tags"] == []
         assert result[0]["reason"] == ""
+    @pytest.mark.asyncio
+    async def test_object_messages_in_conversation_history(self, mock_llm):
+        """Object-style messages (e.g. ChatCompletionMessage) should not cause AttributeError."""
+        mock_llm.return_value = make_completion_response(json.dumps({
+            "action": "create",
+            "should_store": True,
+            "importance": 8,
+            "content": "User prefers dark mode",
+        }))
+
+        class FakeMessage:
+            def __init__(self, role, content):
+                self.role = role
+                self.content = content
+
+        result = await extract_memory(
+            llm_client=make_llm_client(mock_llm),
+            conversation_history=[
+                {"role": "user", "content": "I like dark mode"},
+                FakeMessage("assistant", "I will remember that."),
+            ],
+            existing_memories=[],
+            user_id="user-1",
+            importance_threshold=5,
+        )
+
+        assert len(result) == 1
+        assert result[0]["content"] == "User prefers dark mode"

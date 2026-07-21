@@ -338,9 +338,8 @@ class TestRetrieve:
 
 class TestUpdate:
     @pytest.mark.asyncio
-    async def test_update_existing_memory(self, service, mock_qdrant_client):
-        """Update should regenerate embedding and upsert."""
-        # Mock scroll to return existing point
+    async def test_update_existing_memory_direct_retrieve(self, service, mock_qdrant_client):
+        """Update should regenerate embedding and upsert via direct retrieve."""
         mock_point = make_scored_point(
             point_id="mem-1",
             payload={
@@ -353,8 +352,7 @@ class TestUpdate:
             },
             vector=[0.1, 0.2, 0.3],
         )
-        scroll_response = ([mock_point], None)
-        mock_qdrant_client.scroll.return_value = scroll_response
+        mock_qdrant_client.retrieve.return_value = [mock_point]
 
         result = await service.update(
             target_memory_id="mem-1",
@@ -363,7 +361,7 @@ class TestUpdate:
         )
 
         assert result is True
-        # Verify upsert was called with new embedding and payload
+        mock_qdrant_client.retrieve.assert_called_once()
         mock_qdrant_client.upsert.assert_called_once()
         upserted = mock_qdrant_client.upsert.call_args[1]["points"][0]
         assert upserted.id == "mem-1"
@@ -372,8 +370,35 @@ class TestUpdate:
         assert "updated_at" in upserted.payload
 
     @pytest.mark.asyncio
+    async def test_update_existing_memory_scroll_fallback(self, service, mock_qdrant_client):
+        """Update should fall back to scroll if direct retrieve returns empty."""
+        mock_point = make_scored_point(
+            point_id="mem-1",
+            payload={
+                "content": "Old content",
+                "memory_type": "semantic",
+                "importance": 5,
+                "tags": ["old"],
+            },
+            vector=[0.1, 0.2, 0.3],
+        )
+        mock_qdrant_client.retrieve.return_value = []
+        mock_qdrant_client.scroll.return_value = ([mock_point], None)
+
+        result = await service.update(
+            target_memory_id="mem-1",
+            new_content="Updated content",
+        )
+
+        assert result is True
+        mock_qdrant_client.retrieve.assert_called_once()
+        mock_qdrant_client.scroll.assert_called_once()
+        mock_qdrant_client.upsert.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_update_nonexistent_memory(self, service, mock_qdrant_client):
         """Update on non-existent memory should return False."""
+        mock_qdrant_client.retrieve.return_value = []
         mock_qdrant_client.scroll.return_value = ([], None)
         result = await service.update(target_memory_id="nonexistent", new_content="nope")
         assert result is False
@@ -387,34 +412,47 @@ class TestUpdate:
             payload={"content": "Old", "tags": ["keep"], "memory_type": "semantic", "importance": 5, "user_id": "u1", "session_id": "s1"},
             vector=[0.1, 0.2, 0.3],
         )
-        mock_qdrant_client.scroll.return_value = ([mock_point], None)
+        mock_qdrant_client.retrieve.return_value = [mock_point]
 
         await service.update(target_memory_id="mem-1", new_content="Updated")
         upserted = mock_qdrant_client.upsert.call_args[1]["points"][0]
         assert upserted.payload["tags"] == ["keep"]  # Unchanged
 
-
 # ── delete ───────────────────────────────────────────────────────
 
 class TestDelete:
     @pytest.mark.asyncio
-    async def test_delete_existing_memory(self, service, mock_qdrant_client):
-        """Delete should scroll for the memory and then delete it."""
+    async def test_delete_existing_memory_direct_retrieve(self, service, mock_qdrant_client):
+        """Delete should retrieve point by ID directly and delete it."""
         mock_point = make_scored_point(point_id="mem-1")
+        mock_qdrant_client.retrieve.return_value = [mock_point]
+
+        result = await service.delete(memory_id="mem-1")
+        assert result is True
+        mock_qdrant_client.retrieve.assert_called_once()
+        mock_qdrant_client.delete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_delete_existing_memory_scroll_fallback(self, service, mock_qdrant_client):
+        """Delete should fall back to scroll if retrieve returns empty."""
+        mock_point = make_scored_point(point_id="mem-1")
+        mock_qdrant_client.retrieve.return_value = []
         mock_qdrant_client.scroll.return_value = ([mock_point], None)
 
         result = await service.delete(memory_id="mem-1")
         assert result is True
+        mock_qdrant_client.retrieve.assert_called_once()
+        mock_qdrant_client.scroll.assert_called_once()
         mock_qdrant_client.delete.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent_memory(self, service, mock_qdrant_client):
         """Delete on non-existent memory should return False."""
+        mock_qdrant_client.retrieve.return_value = []
         mock_qdrant_client.scroll.return_value = ([], None)
         result = await service.delete(memory_id="nonexistent")
         assert result is False
         mock_qdrant_client.delete.assert_not_called()
-
 
 # ── consolidate ──────────────────────────────────────────────────
 

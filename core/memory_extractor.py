@@ -39,8 +39,12 @@ async def extract_memory(
     # Build conversation text (exclude system messages)
     conversation_parts = []
     for msg in conversation_history:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
+        if isinstance(msg, dict):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+        else:
+            role = getattr(msg, "role", "unknown")
+            content = getattr(msg, "content", "")
         if not content:
             continue
         if role == "system":
