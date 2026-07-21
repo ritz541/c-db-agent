@@ -27,15 +27,26 @@ class DirectPlanner(PlannerInterface):
         plan_id = str(uuid4())
         steps: list[PlanStep] = []
 
-        # If goal mentions math/calculation and calculator tool exists
+        STOP_WORDS = {
+            "a", "an", "the", "in", "on", "at", "to", "of", "for", "is", "are", "be",
+            "by", "with", "or", "and", "so", "my", "me", "you", "your", "what", "how",
+            "can", "do", "does", "did", "it", "this", "that", "i", "we", "he", "she",
+        }
+
         matching_tool = None
+        goal_words = set(goal.lower().split())
         for tool in tools:
-            if tool.name in goal.lower() or any(
-                kw in goal.lower() for kw in tool.description.lower().split()[:3]
-            ):
+            if tool.name in goal.lower():
                 matching_tool = tool.name
                 break
-
+            desc_keywords = [
+                w.strip(".,!?()[]{}").lower()
+                for w in tool.description.split()[:5]
+            ]
+            meaningful_keywords = [w for w in desc_keywords if w and w not in STOP_WORDS and len(w) > 2]
+            if any(kw in goal_words for kw in meaningful_keywords):
+                matching_tool = tool.name
+                break
         steps.append(
             PlanStep(
                 step_id=1,
