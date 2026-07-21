@@ -1,3 +1,5 @@
+import json
+
 import inspect
 from typing import Any
 import structlog
@@ -83,10 +85,17 @@ class ToolExecutor(ExecutorInterface):
             if isinstance(res, ToolResult):
                 return res
             elif isinstance(res, dict):
+                if "output" in res and isinstance(res["output"], str):
+                    output_str = res["output"]
+                else:
+                    try:
+                        output_str = json.dumps(res, default=str)
+                    except Exception:
+                        output_str = str(res)
                 return ToolResult(
                     tool_call_id=tool_call.id,
                     success=res.get("success", True),
-                    output=str(res.get("output", res.get("message", res))),
+                    output=output_str,
                     error=res.get("error"),
                     metadata=res.get("metadata", {}),
                 )
