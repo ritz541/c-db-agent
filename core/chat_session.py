@@ -81,13 +81,41 @@ class ChatSession:
             lines.append(f"[{m['memory_type']}] (importance={m['importance']}): {m['content']}")
         return "\n".join(lines)
 
+    def _build_messages(self, memory_context: str | None = None) -> list[dict]:
+        """
+        Build ephemeral message list for LLM calls with optional memory context.
+
+        The memory context is injected at index 1 (after the system prompt)
+        without mutating self.messages, so it does not accumulate across turns.
+        """
+        if not memory_context:
+            return self.messages
+        # Insert memory context as a system message right after the system prompt
+        msgs = [self.messages[0]]
+        msgs.append({"role": "system", "content": f"RETRIEVED CONTEXT:\n{memory_context}\n---"})
+        msgs.extend(self.messages[1:])
+        return msgs
+
     async def _background_extract_and_store(self, user_input: str, llm_response: str):
         """Async background task: extract memories from the conversation turn."""
         try:
+            # Fetch existing memories to enable update detection
+            existing_memories = []
+            if self.memory_service:
+                try:
+                    existing = await self.memory_service.retrieve(
+                        query=user_input,
+                        user_id=self.user_id,
+                        top_k=self.top_k_memories,
+                    )
+                    existing_memories = existing or []
+                except Exception:
+                    logger.warning("memory.existing_fetch_failed")
+
             memories_to_store = await extract_memory(
                 llm_client=self.llm,
                 conversation_history=self.messages[-10:],  # last ~10 messages
-                existing_memories=[],  # optional: fetch for update detection
+                existing_memories=existing_memories,
                 user_id=self.user_id,
                 importance_threshold=self.importance_threshold,
             )
@@ -136,7 +164,8 @@ class ChatSession:
             # Add user message to history
             self.messages.append({"role": "user", "content": user_input})
 
-            # STEP 1: Retrieve relevant memories
+            # STEP 1: Retrieve relevant memories (ephemeral — not injected into self.messages)
+            memory_context = None
             if self.memory_service:
                 try:
                     retrieved = await self.memory_service.retrieve(
@@ -146,18 +175,14 @@ class ChatSession:
                     )
                     if retrieved:
                         memory_context = self._format_memories(retrieved)
-                        self.messages.insert(
-                            1,
-                            {"role": "system", "content": f"RETRIEVED CONTEXT:\n{memory_context}\n---"}
-                        )
                 except Exception as e:
                     logger.error("memory.retrieval_failed", error=str(e))
                     # Continue without memories
 
-            # Send to LLM
+            # Send to LLM (build messages with ephemeral memory context)
             try:
                 response = self.llm.complete(
-                    messages=self.messages,
+                    messages=self._build_messages(memory_context),
                     tools=self.tool_registry.get_schemas()
                 )
             except Exception as e:
@@ -190,6 +215,9 @@ class ChatSession:
                     print()  # blank line before intermediate response
                     console.print(Markdown(response_message.content))
                     print()
+
+                # Append the assistant message with tool_calls before adding tool responses
+                self.messages.append(response_message)
                 
                 # Process each tool call
                 for tool_call in response_message.tool_calls:
@@ -250,7 +278,7 @@ class ChatSession:
                 # Send tool results back to LLM for final response
                 try:
                     response = self.llm.complete(
-                        messages=self.messages,
+                        messages=self._build_messages(memory_context),
                         tools=self.tool_registry.get_schemas()
                     )
                 except Exception as e:

@@ -20,6 +20,9 @@ import json
 import uuid
 import tenacity
 
+import litellm
+litellm.suppress_debug_info = True
+
 # ── Load Environment Variables ───────────────────────────────────
 from dotenv import load_dotenv
 load_dotenv()
@@ -210,11 +213,22 @@ def main():
         memory_service = QdrantMemoryService(
             url=settings.qdrant_url,
             api_key=settings.qdrant_api_key,
+            collection_name=settings.qdrant_collection,
+            vector_size=settings.qdrant_vector_size,
+            embedding_provider=settings.embedding_provider,
+            embedding_model=settings.embedding_model,
+            embedding_api_key=settings.embedding_api_key or settings.deepseek_api_key,
+        )
+        logger.info(
+            "memory.service_initialized",
+            provider=settings.embedding_provider,
+            model=settings.embedding_model,
             collection=settings.qdrant_collection,
             vector_size=settings.qdrant_vector_size,
-            embedding_model=settings.embedding_model,
+            top_k=settings.top_k_memories,
+            importance_threshold=settings.memory_importance_threshold,
+            user_id=os.getenv("USER_ID", "cli-user"),
         )
-        logger.info("memory.service_initialized")
     else:
         logger.info("memory.disabled", reason="Qdrant credentials not configured")
 

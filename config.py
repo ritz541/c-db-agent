@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     qdrant_api_key: Optional[str] = Field(default="", description="Qdrant Cloud API key")
     qdrant_collection: str = Field(default="agent_memory", description="Qdrant collection name")
     qdrant_vector_size: int = Field(default=4096, description="Embedding vector dimension")
-    embedding_model: str = Field(default="qwen/qwen3-embedding-8b", description="Embedding model via LiteLLM/OpenRouter")
+    embedding_provider: str = Field(default="openrouter", description="LiteLLM provider prefix for embeddings (e.g. openrouter, openai, azure)")
+    embedding_model: str = Field(default="", description="Embedding model name (e.g. qwen/qwen3-embedding-8b). Combined with embedding_provider for the full LiteLLM model string")
+    embedding_api_key: Optional[str] = Field(default="", description="API key for embedding model (OpenRouter key). Falls back to DEEPSEEK_API_KEY if empty")
     top_k_memories: int = Field(default=5, ge=1, le=20, description="Top-K memories to retrieve per query")
     memory_importance_threshold: int = Field(default=6, ge=1, le=10, description="Min importance to persist a memory")
 
