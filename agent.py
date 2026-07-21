@@ -158,13 +158,6 @@ def main():
             # Initialize schema in database
             conn = get_connection()
             try:
-                # Reset email migrations if they exist with old schema to allow re-application
-                try:
-                    schema_manager.reset_migration(conn, "email_001")
-                    schema_manager.reset_migration(conn, "email_001a")
-                except Exception as e:
-                    logger.debug("schema.email_reset_skipped", error=str(e))
-                
                 if schema_manager.initialize_schema(conn):
                     logger.info("schema.initialization_success")
                 else:

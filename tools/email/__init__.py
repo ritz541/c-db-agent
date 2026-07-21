@@ -34,24 +34,6 @@ def register_schema():
         down_sql="DROP TABLE IF EXISTS resumes;"
     )
     
-    # Add pdf_mtime column if missing (schema drift fix)
-    add_pdf_mtime_migration = Migration(
-        version="001a",
-        description="Add pdf_mtime column to existing resumes table",
-        up_sql="""
-            DO $$
-            BEGIN
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns 
-                    WHERE table_name = 'resumes' AND column_name = 'pdf_mtime'
-                ) THEN
-                    ALTER TABLE resumes ADD COLUMN pdf_mtime TIMESTAMP;
-                END IF;
-            END $$;
-        """,
-        down_sql="ALTER TABLE resumes DROP COLUMN IF EXISTS pdf_mtime;"
-    )
-    
     # Applications table
     applications_migration = Migration(
         version="002",
@@ -72,7 +54,6 @@ def register_schema():
     )
     
     schema_manager.register_migration("email", resumes_migration)
-    schema_manager.register_migration("email", add_pdf_mtime_migration)
     schema_manager.register_migration("email", applications_migration)
 
 
