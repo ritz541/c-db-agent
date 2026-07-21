@@ -13,6 +13,69 @@ from pypdf import PdfReader
 logger = structlog.get_logger()
 
 
+def register_schema():
+    """Register the email tools' schema with the schema manager."""
+    from infrastructure.schema_manager import schema_manager, Migration
+    
+    # Resumes table
+    resumes_migration = Migration(
+        version="001",
+        description="Create resumes table",
+        up_sql="""
+            CREATE TABLE IF NOT EXISTS resumes (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                content TEXT NOT NULL,
+                pdf_path TEXT DEFAULT '',
+                pdf_mtime TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """,
+        down_sql="DROP TABLE IF EXISTS resumes;"
+    )
+    
+    # Add pdf_mtime column if missing (schema drift fix)
+    add_pdf_mtime_migration = Migration(
+        version="001a",
+        description="Add pdf_mtime column to existing resumes table",
+        up_sql="""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'resumes' AND column_name = 'pdf_mtime'
+                ) THEN
+                    ALTER TABLE resumes ADD COLUMN pdf_mtime TIMESTAMP;
+                END IF;
+            END $$;
+        """,
+        down_sql="ALTER TABLE resumes DROP COLUMN IF EXISTS pdf_mtime;"
+    )
+    
+    # Applications table
+    applications_migration = Migration(
+        version="002",
+        description="Create applications table",
+        up_sql="""
+            CREATE TABLE IF NOT EXISTS applications (
+                id SERIAL PRIMARY KEY,
+                company TEXT NOT NULL,
+                role_title TEXT NOT NULL,
+                recipient_email TEXT NOT NULL,
+                job_description TEXT,
+                tailored_body TEXT NOT NULL,
+                status TEXT DEFAULT 'draft',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """,
+        down_sql="DROP TABLE IF EXISTS applications;"
+    )
+    
+    schema_manager.register_migration("email", resumes_migration)
+    schema_manager.register_migration("email", add_pdf_mtime_migration)
+    schema_manager.register_migration("email", applications_migration)
+
+
 @tenacity.retry(
     wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),
     stop=tenacity.stop_after_attempt(3),

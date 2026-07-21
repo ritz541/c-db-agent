@@ -82,18 +82,6 @@ Output only the email body. Start with "Dear Hiring Manager," or similar."""
 
             with db_conn.cursor() as cur:
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS applications (
-                        id SERIAL PRIMARY KEY,
-                        company TEXT NOT NULL,
-                        role_title TEXT NOT NULL,
-                        recipient_email TEXT NOT NULL,
-                        job_description TEXT,
-                        tailored_body TEXT NOT NULL,
-                        status TEXT DEFAULT 'draft',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-                cur.execute("""
                     INSERT INTO applications (company, role_title, recipient_email, job_description, tailored_body)
                     VALUES (%s, %s, %s, %s, %s)
                     RETURNING id;

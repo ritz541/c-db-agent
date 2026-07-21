@@ -1,19 +1,8 @@
 """
 🗄️ CockroachDB Query Tool
 
-This tool lets DeepSeek generate and run SQL queries from your
-natural language questions.
-
-Examples of what you can ask:
-  - "What tables do I have in my database?"
-  - "Show me all calculations from today"
-  - "What's the average result of all calculations?"
-  - "Describe the schema of the calculations table"
-
-Safety:
-  - We ALLOW: SELECT, INSERT, CREATE TABLE, CREATE INDEX, ALTER TABLE
-  - We BLOCK: DROP, TRUNCATE, DELETE, UPDATE (without WHERE), DROP DATABASE
-  - This gives you flexibility while preventing accidental disasters.
+Executes SQL queries against CockroachDB with safety validation.
+Supports SELECT, INSERT, CREATE, and ALTER operations while blocking destructive commands.
 """
 
 import traceback

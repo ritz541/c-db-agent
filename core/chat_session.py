@@ -25,7 +25,7 @@ class ChatSession:
     - User interaction loop
     """
     
-    def __init__(self, llm_client: LLMClient, tool_registry: ToolRegistry, system_prompt: str):
+    def __init__(self, llm_client: LLMClient, tool_registry: ToolRegistry, system_prompt: str, max_tool_retries: int = 2):
         """
         Initialize the chat session.
         
@@ -33,12 +33,14 @@ class ChatSession:
             llm_client: LLM API client
             tool_registry: Tool registry for executing tools
             system_prompt: System prompt for the LLM
+            max_tool_retries: Maximum number of retries for failed tool executions
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
         self.messages = [{"role": "system", "content": system_prompt}]
+        self.max_tool_retries = max_tool_retries
         
-        logger.info("chat_session.initialized")
+        logger.info("chat_session.initialized", max_tool_retries=max_tool_retries)
     
     def process_user_input(self, user_input: str) -> str:
         """
@@ -104,25 +106,46 @@ class ChatSession:
                     except json.JSONDecodeError:
                         args = {}
                     
-                    # Execute the tool
+                    # Execute the tool with retry logic
                     from infrastructure.db_pool import get_connection, return_connection
                     
-                    conn = get_connection()
-                    try:
-                        result = self.tool_registry.execute(
-                            tool_name=tool_call.function.name,
-                            args=args,
-                            db_conn=conn
-                        )
-                    except Exception as tool_e:
-                        logger.error(
-                            "tool.execution_failed",
-                            tool=tool_call.function.name,
-                            error=str(tool_e)
-                        )
-                        result = {"success": False, "error": str(tool_e)}
-                    finally:
-                        return_connection(conn)
+                    result = None
+                    
+                    for attempt in range(self.max_tool_retries):
+                        try:
+                            conn = get_connection()
+                            try:
+                                result = self.tool_registry.execute(
+                                    tool_name=tool_call.function.name,
+                                    args=args,
+                                    db_conn=conn
+                                )
+                                # If successful, break out of retry loop
+                                if result.get("success", False):
+                                    break
+                                # If tool failed but didn't raise exception, still retry
+                                elif attempt < self.max_tool_retries - 1:
+                                    logger.warning(
+                                        "tool.failed_retrying",
+                                        tool=tool_call.function.name,
+                                        attempt=attempt + 1,
+                                        error=result.get("error", "Unknown error")
+                                    )
+                                    continue
+                            finally:
+                                return_connection(conn)
+                        except Exception as tool_e:
+                            logger.error(
+                                "tool.execution_failed",
+                                tool=tool_call.function.name,
+                                attempt=attempt + 1,
+                                error=str(tool_e)
+                            )
+                            if attempt < self.max_tool_retries - 1:
+                                # Retry on connection errors or transient failures
+                                continue
+                            else:
+                                result = {"success": False, "error": str(tool_e)}
                     
                     # Send tool result back to LLM
                     self.messages.append({
