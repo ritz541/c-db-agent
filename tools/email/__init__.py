@@ -24,7 +24,7 @@ def _call_llm(prompt: str) -> str:
     import litellm
     model = os.getenv("LLM_MODEL", "deepseek/deepseek-v4-flash")
     api_key = os.getenv("DEEPSEEK_API_KEY")
-    with sentry_sdk.start_span(op="llm", description="email_tool._call_llm"):
+    with sentry_sdk.start_span(op="llm", description="email._call_llm"):
         resp = litellm.completion(
             model=model,
             messages=[{"role": "user", "content": prompt}],
