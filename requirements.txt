@@ -23,3 +23,5 @@ rich>=15.0.0
 sqlglot>=25.0.0
 # pypdf — PDF text extraction for resume parsing
 pypdf>=3.0.0
+# requests — HTTP client for TinyFish web search
+requests>=2.31.0
