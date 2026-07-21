@@ -3,8 +3,8 @@ Store Resume Tool — Save your resume to DB
 """
 
 import os
+import datetime
 import structlog
-from . import PdfReader
 from ..base import BaseTool
 
 logger = structlog.get_logger()
@@ -46,14 +46,40 @@ class StoreResumeTool(BaseTool):
                         name TEXT NOT NULL UNIQUE,
                         content TEXT NOT NULL,
                         pdf_path TEXT DEFAULT '',
+                        pdf_mtime TIMESTAMP,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                
+                # Check if we have an existing resume with the same PDF path and mtime
+                pdf_mtime = None
+                if pdf_path and os.path.isfile(pdf_path):
+                    pdf_mtime = datetime.datetime.fromtimestamp(
+                        os.path.getmtime(pdf_path), tz=datetime.timezone.utc
+                    )
+                    cur.execute(
+                        "SELECT pdf_mtime FROM resumes WHERE pdf_path = %s AND name = %s",
+                        (pdf_path, name)
+                    )
+                    existing = cur.fetchone()
+                    if existing and existing[0]:
+                        stored_mtime = existing[0]
+                        # Handle timezone-naive datetime from DB
+                        if hasattr(stored_mtime, 'tzinfo') and not stored_mtime.tzinfo:
+                            stored_mtime = stored_mtime.replace(tzinfo=datetime.timezone.utc)
+                        # Only skip if PDF hasn't been modified
+                        if not pdf_mtime or (stored_mtime and pdf_mtime <= stored_mtime):
+                            logger.info("resume.up_to_date", name=name, pdf_path=pdf_path)
+                            return {"success": True, "message": f"Resume '{name}' is already up-to-date.", "name": name}
+                
                 cur.execute("""
-                    INSERT INTO resumes (name, content, pdf_path)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (name) DO UPDATE SET content = EXCLUDED.content, pdf_path = EXCLUDED.pdf_path;
-                """, (name, text, pdf_path))
+                    INSERT INTO resumes (name, content, pdf_path, pdf_mtime)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE 
+                        SET content = EXCLUDED.content, 
+                            pdf_path = EXCLUDED.pdf_path,
+                            pdf_mtime = EXCLUDED.pdf_mtime;
+                """, (name, text, pdf_path, pdf_mtime))
             db_conn.commit()
             logger.info("resume.stored", name=name, pdf_path=pdf_path)
             msg = f"Resume '{name}' saved."
