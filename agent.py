@@ -15,6 +15,7 @@ Run: python agent.py
 
 import os
 import sys
+import asyncio
 import json
 import uuid
 import tenacity
@@ -40,6 +41,7 @@ from tools.registry import registry
 # Import core modules
 from core.llm_client import LLMClient, RateLimiter
 from core.chat_session import ChatSession
+from core.memory_service import QdrantMemoryService, MemoryService
 from core.prompts import get_system_prompt
 
 
@@ -202,16 +204,34 @@ def main():
         rate_limiter=rate_limiter
     )
     
+    # Initialize memory service (optional, graceful degradation)
+    memory_service: MemoryService = None
+    if settings.qdrant_url and settings.qdrant_api_key:
+        memory_service = QdrantMemoryService(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+            collection=settings.qdrant_collection,
+            vector_size=settings.qdrant_vector_size,
+            embedding_model=settings.embedding_model,
+        )
+        logger.info("memory.service_initialized")
+    else:
+        logger.info("memory.disabled", reason="Qdrant credentials not configured")
+
     # Create and run chat session
     session = ChatSession(
         llm_client=llm_client,
         tool_registry=registry,
         system_prompt=get_system_prompt(),
-        max_tool_retries=settings.tool_max_retries
+        max_tool_retries=settings.tool_max_retries,
+        memory_service=memory_service,
+        user_id=os.getenv("USER_ID", "cli-user"),
+        top_k_memories=settings.top_k_memories,
+        importance_threshold=settings.memory_importance_threshold,
     )
-    
+
     try:
-        session.run()
+        asyncio.run(session.run())
     except KeyboardInterrupt:
         print("\nGoodbye!")
     finally:

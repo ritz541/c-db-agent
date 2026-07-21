@@ -5,10 +5,14 @@ Handles the interactive chat loop and message management.
 Encapsulates chat state and tool call processing.
 """
 
+import asyncio
 import json
 import structlog
+import uuid
 
 from core.llm_client import LLMClient
+from core.memory_service import MemoryService
+from core.memory_extractor import extract_memory
 from tools.registry import ToolRegistry
 
 
@@ -23,26 +27,91 @@ class ChatSession:
     - Message history
     - Multi-turn tool call processing
     - User interaction loop
+    - Memory retrieval and storage
     """
     
-    def __init__(self, llm_client: LLMClient, tool_registry: ToolRegistry, system_prompt: str, max_tool_retries: int = 2):
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        tool_registry: ToolRegistry,
+        system_prompt: str,
+        max_tool_retries: int = 2,
+        memory_service: MemoryService = None,
+        user_id: str = "",
+        top_k_memories: int = 5,
+        importance_threshold: int = 6,
+    ):
         """
         Initialize the chat session.
-        
+
         Args:
             llm_client: LLM API client
             tool_registry: Tool registry for executing tools
             system_prompt: System prompt for the LLM
             max_tool_retries: Maximum number of retries for failed tool executions
+            memory_service: Optional memory service for context retrieval and storage
+            user_id: User identifier for memory scoping
+            top_k_memories: Number of memories to retrieve per query
+            importance_threshold: Minimum importance score to persist a memory
         """
         self.llm = llm_client
         self.tool_registry = tool_registry
         self.messages = [{"role": "system", "content": system_prompt}]
         self.max_tool_retries = max_tool_retries
+        self.memory_service = memory_service
+        self.user_id = user_id
+        self.session_id = str(uuid.uuid4())
+        self.top_k_memories = top_k_memories
+        self.importance_threshold = importance_threshold
         
-        logger.info("chat_session.initialized", max_tool_retries=max_tool_retries)
+        logger.info(
+            "chat_session.initialized",
+            max_tool_retries=max_tool_retries,
+            memory_enabled=memory_service is not None,
+            user_id=user_id,
+            session_id=self.session_id,
+            top_k_memories=top_k_memories,
+            importance_threshold=importance_threshold,
+        )
     
-    def process_user_input(self, user_input: str) -> str:
+    def _format_memories(self, memories: list[dict]) -> str:
+        """Format retrieved memories for injection into the prompt."""
+        lines = []
+        for m in memories:
+            lines.append(f"[{m['memory_type']}] (importance={m['importance']}): {m['content']}")
+        return "\n".join(lines)
+
+    async def _background_extract_and_store(self, user_input: str, llm_response: str):
+        """Async background task: extract memories from the conversation turn."""
+        try:
+            memories_to_store = await extract_memory(
+                llm_client=self.llm,
+                conversation_history=self.messages[-10:],  # last ~10 messages
+                existing_memories=[],  # optional: fetch for update detection
+                user_id=self.user_id,
+                importance_threshold=self.importance_threshold,
+            )
+            for mem in memories_to_store:
+                if mem["action"] == "create":
+                    await self.memory_service.store(
+                        content=mem["content"],
+                        memory_type=mem["memory_type"],
+                        importance=mem["importance"],
+                        tags=mem["tags"],
+                        user_id=self.user_id,
+                        session_id=self.session_id,
+                    )
+                elif mem["action"] == "update" and mem.get("target_memory"):
+                    await self.memory_service.update(
+                        target_memory_id=mem["target_memory"],
+                        new_content=mem["content"],
+                        new_tags=mem.get("tags"),
+                    )
+        except Exception as e:
+            logger.error("memory.extract_and_store_failed", error=str(e))
+            # Silently fail — memory loss is not critical
+    
+    async def process_user_input(self, user_input: str) -> str:
         """
         Process one user message (handles multi-turn tool calls).
 
@@ -52,7 +121,6 @@ class ChatSession:
         Returns:
             str: Agent's final response
         """
-        import uuid
         import sentry_sdk
         from rich.markdown import Markdown
         from rich.console import Console
@@ -67,6 +135,24 @@ class ChatSession:
 
             # Add user message to history
             self.messages.append({"role": "user", "content": user_input})
+
+            # STEP 1: Retrieve relevant memories
+            if self.memory_service:
+                try:
+                    retrieved = await self.memory_service.retrieve(
+                        query=user_input,
+                        user_id=self.user_id,
+                        top_k=self.top_k_memories,
+                    )
+                    if retrieved:
+                        memory_context = self._format_memories(retrieved)
+                        self.messages.insert(
+                            1,
+                            {"role": "system", "content": f"RETRIEVED CONTEXT:\n{memory_context}\n---"}
+                        )
+                except Exception as e:
+                    logger.error("memory.retrieval_failed", error=str(e))
+                    # Continue without memories
 
             # Send to LLM
             try:
@@ -89,14 +175,21 @@ class ChatSession:
                 # If no tool calls, this is the final text response
                 if not response_message.tool_calls:
                     self.messages.append(response_message)
-                    return response_message.content
+                    final_content = response_message.content
+
+                    # STEP 2: Async memory extraction and storage
+                    if self.memory_service:
+                        asyncio.create_task(
+                            self._background_extract_and_store(user_input, final_content or "")
+                        )
+
+                    return final_content
 
                 # LLM wants to call tools - print any intermediate content first
                 if response_message.content:
                     print()  # blank line before intermediate response
                     console.print(Markdown(response_message.content))
                     print()
-                self.messages.append(response_message)
                 
                 # Process each tool call
                 for tool_call in response_message.tool_calls:
@@ -166,9 +259,9 @@ class ChatSession:
                     # Remove the assistant message with tool_calls and tool responses
                     # to keep message history clean
                     self.messages.pop()  # Remove last tool response
-                    return f"Sorry, there was an error processing the tool results. Please try again."
+                    return "Sorry, there was an error processing the tool results. Please try again."
     
-    def run(self):
+    async def run(self):
         """Run the interactive chat loop."""
         
         from rich.markdown import Markdown
@@ -191,7 +284,7 @@ class ChatSession:
             try:
                 while True:
                     prompt = "→ " if lines else "You: "
-                    line = input(prompt)
+                    line = await asyncio.to_thread(input, prompt)
                     if line.strip().lower() in ("exit", "quit"):
                         print("Goodbye!")
                         return
@@ -210,7 +303,7 @@ class ChatSession:
                 continue
             
             # Process the input
-            response = self.process_user_input(user_input)
+            response = await self.process_user_input(user_input)
             
             if response:
                 print()  # blank line before response

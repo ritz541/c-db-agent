@@ -66,13 +66,14 @@ def mock_llm_final_response():
     return mock_response
 
 
+@pytest.mark.asyncio
 class TestChatSessionIntegration:
     """Test the complete chat session flow."""
 
-    def test_process_user_input_with_tool_call(self, test_registry, mock_db, mock_llm_response, mock_llm_final_response):
+    async def test_process_user_input_with_tool_call(self, test_registry, mock_db, mock_llm_response, mock_llm_final_response):
         """Test processing user input that requires a tool call."""
         conn, cursor = mock_db
-        
+
         # Create LLM client with mocked completion
         rate_limiter = RateLimiter(max_requests_per_minute=60)
         llm_client = LLMClient(
@@ -80,7 +81,7 @@ class TestChatSessionIntegration:
             api_key="test-key",
             rate_limiter=rate_limiter
         )
-        
+
         # Mock the LLM to return tool call first, then final response
         # Also mock database pool functions
         with patch.object(llm_client, 'complete', side_effect=[mock_llm_response, mock_llm_final_response]), \
@@ -91,8 +92,8 @@ class TestChatSessionIntegration:
                 tool_registry=test_registry,
                 system_prompt="You are a helpful assistant."
             )
-            
-            response = session.process_user_input("What is 2 + 2?")
+
+            response = await session.process_user_input("What is 2 + 2?")
             
             # Verify the tool was called
             assert response == "The result is 4"
@@ -100,7 +101,7 @@ class TestChatSessionIntegration:
             assert cursor.execute.called
             assert conn.commit.called
 
-    def test_process_user_input_direct_response(self, test_registry, mock_llm_final_response):
+    async def test_process_user_input_direct_response(self, test_registry, mock_llm_final_response):
         """Test processing user input that doesn't require tools."""
         rate_limiter = RateLimiter(max_requests_per_minute=60)
         llm_client = LLMClient(
@@ -108,15 +109,15 @@ class TestChatSessionIntegration:
             api_key="test-key",
             rate_limiter=rate_limiter
         )
-        
+
         with patch.object(llm_client, 'complete', return_value=mock_llm_final_response):
             session = ChatSession(
                 llm_client=llm_client,
                 tool_registry=test_registry,
                 system_prompt="You are a helpful assistant."
             )
-            
-            response = session.process_user_input("Hello!")
+
+            response = await session.process_user_input("Hello!")
             
             assert response == "The result is 4"
 
@@ -200,10 +201,11 @@ class TestDatabaseIntegration:
         cursor.execute.assert_not_called()
 
 
+@pytest.mark.asyncio
 class TestToolChainExecution:
     """Test scenarios where multiple tools are called in sequence."""
 
-    def test_multiple_tool_calls_single_turn(self, test_registry, mock_db):
+    async def test_multiple_tool_calls_single_turn(self, test_registry, mock_db):
         """Test multiple tool calls in a single user turn."""
         conn, cursor = mock_db
         
@@ -252,43 +254,44 @@ class TestToolChainExecution:
                 system_prompt="You are a helpful assistant."
             )
             
-            response = session.process_user_input("Calculate 2+2 and 3*3")
-            
+            response = await session.process_user_input("Calculate 2+2 and 3*3")
+
             assert response == "The results are 4 and 9"
             # Verify both calculations were executed
             assert cursor.execute.call_count >= 2
 
 
+@pytest.mark.asyncio
 class TestErrorRecoveryIntegration:
     """Test error recovery scenarios in the agent flow."""
 
-    def test_llm_api_error_recovery(self, test_registry, mock_db):
+    async def test_llm_api_error_recovery(self, test_registry, mock_db):
         """Test recovery from LLM API errors."""
         conn, cursor = mock_db
-        
+
         rate_limiter = RateLimiter(max_requests_per_minute=60)
         llm_client = LLMClient(
             model="deepseek/deepseek-v4-flash",
             api_key="test-key",
             rate_limiter=rate_limiter
         )
-        
+
         # Mock LLM to fail then succeed
         mock_success = Mock()
         mock_success_message = Mock()
         mock_success_message.content = "Success"
         mock_success_message.tool_calls = None
         mock_success.choices = [Mock(message=mock_success_message)]
-        
+
         with patch.object(llm_client, 'complete', side_effect=[Exception("API Error"), mock_success]):
             session = ChatSession(
                 llm_client=llm_client,
                 tool_registry=test_registry,
                 system_prompt="You are a helpful assistant."
             )
-            
+
             # First call should fail gracefully
-            response = session.process_user_input("Hello")
+            response = await session.process_user_input("Hello")
             assert response is None  # Error case returns None
             
             # Message should be removed from history

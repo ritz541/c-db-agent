@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     # Tool retry configuration
     tool_max_retries: int = Field(default=2, ge=1, le=5, description="Max retries for failed tool execution")
 
+    # Memory Configuration
+    qdrant_url: Optional[str] = Field(default="", description="Qdrant Cloud URL")
+    qdrant_api_key: Optional[str] = Field(default="", description="Qdrant Cloud API key")
+    qdrant_collection: str = Field(default="agent_memory", description="Qdrant collection name")
+    qdrant_vector_size: int = Field(default=4096, description="Embedding vector dimension")
+    embedding_model: str = Field(default="qwen/qwen3-embedding-8b", description="Embedding model via LiteLLM/OpenRouter")
+    top_k_memories: int = Field(default=5, ge=1, le=20, description="Top-K memories to retrieve per query")
+    memory_importance_threshold: int = Field(default=6, ge=1, le=10, description="Min importance to persist a memory")
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

@@ -56,3 +56,51 @@ def get_tools_description() -> str:
             description += f"- **{tool_name}**: {tool.get_description()}\n"
     
     return description
+
+
+def get_extraction_prompt(conversation_text: str, existing_memories_text: str) -> str:
+    """
+    Return the memory extraction prompt.
+
+    Args:
+        conversation_text: Recent conversation history
+        existing_memories_text: Existing memories for update detection
+
+    Returns:
+        str: Formatted extraction prompt
+    """
+    return f"""You are a memory extraction engine. Analyze the conversation below and determine what should be remembered.
+
+CONVERSATION:
+{conversation_text}
+
+EXISTING MEMORIES (for update detection):
+{existing_memories_text}
+
+RETURN FORMAT — JSON ONLY. No markdown, no explanation.
+
+If nothing worth storing:
+{{"action": "ignore", "should_store": false}}
+
+If something should be stored:
+{{
+  "action": "create" | "update",
+  "should_store": true,
+  "memory_type": "working" | "episodic" | "semantic" | "procedural",
+  "importance": <1-10>,
+  "content": "<clear, concise statement>",
+  "tags": ["tag1", "tag2"],
+  "target_memory": "<memory_id to update, if action is update>",
+  "reason": "<why this is worth remembering>"
+}}
+
+RULES:
+- "working" memories are never stored (return action: "ignore")
+- "semantic" = stable facts about the user
+- "episodic" = events that happened
+- "procedural" = how to do something repeatedly
+- importance >= 6 means store it
+- importance < 6 means ignore it
+- If user corrected a previous fact, return action: "update" with target_memory
+- Tags must be lowercase, no spaces, max 5 tags
+- Content must be a single clear sentence"""

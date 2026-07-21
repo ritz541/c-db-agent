@@ -25,3 +25,5 @@ sqlglot>=25.0.0
 pypdf>=3.0.0
 # requests — HTTP client for TinyFish web search
 requests>=2.31.0
+# qdrant-client — vector database client for memory storage/retrieval
+qdrant-client>=1.13.0
