@@ -11,11 +11,11 @@ from tools.registry import registry
 def get_system_prompt() -> str:
     """
     Return the system prompt for the agent.
-    
+
     Uses a minimal prompt to avoid token bloat.
     Tool definitions are sent separately in the API call (tools parameter),
     so we don't need to list them here.
-    
+
     Returns:
         str: System prompt (short and efficient)
     """
@@ -26,6 +26,11 @@ When a user asks you to do something, check if a tool can help.
 
 Tool definitions are provided separately - use them when relevant.
 Be proactive: if you can use a tool to help, use it.
+
+CRITICAL: The database is PostgreSQL-compatible (CockroachDB). 
+For listing tables, use: SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+For listing columns: SELECT column_name FROM information_schema.columns WHERE table_name = 'table_name';
+Do NOT use sqlite_master or other SQLite-specific queries.
 
 For database queries: be careful with destructive operations.
 For job applications: be professional and tailored.

@@ -100,10 +100,12 @@ class DatabaseQueryTool(BaseTool):
     
     def get_description(self) -> str:
         return (
-            "Run a SQL query against the CockroachDB database. "
+            "Run a SQL query against the CockroachDB (PostgreSQL-compatible) database. "
             "Use this to discover tables, inspect schemas, fetch data, or insert records. "
             "The database has a 'calculations' table with columns: "
-            "id, expression, result, created_at."
+            "id, expression, result, created_at. "
+            "For PostgreSQL: use information_schema.tables or pg_tables, NOT sqlite_master. "
+            "Example for listing tables: SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';"
         )
     
     def get_parameters(self) -> dict:
