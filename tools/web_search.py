@@ -86,7 +86,7 @@ class WebSearchTool(BaseTool):
                 "https://api.search.tinyfish.ai",
                 headers={"X-API-Key": api_key},
                 params={
-                    "q": query,
+                    "query": query,
                     "format": "json",
                     "purpose": "Finding job postings for job application"
                 },
@@ -126,7 +126,7 @@ class WebSearchTool(BaseTool):
                 "https://api.fetch.tinyfish.ai",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
                 json={
-                    "url": url,
+                    "urls": [url],
                     "format": "markdown",
                     "purpose": "Extracting job description for application draft"
                 },
@@ -135,8 +135,15 @@ class WebSearchTool(BaseTool):
             response.raise_for_status()
             data = response.json()
 
-            content = data.get("text", "")
-            title = data.get("title", "")
+            # TinyFish returns {"results": [...]} with array of results
+            results = data.get("results", [])
+            if results and len(results) > 0:
+                result_data = results[0]
+            else:
+                result_data = data
+
+            content = result_data.get("text", "")
+            title = result_data.get("title", "") or result_data.get("description", "")
 
             logger.info("web_search.fetch_success", url=url, content_len=len(content))
             return {
