@@ -51,29 +51,32 @@ class WebSearchTool(BaseTool):
             "required": ["query"]
         }
 
-    def execute(self, db_conn, query: str, action: str = "auto", url: str = None) -> dict:
+    def execute(self, db_conn, query: str = None, action: str = "auto", url: str = None) -> dict:
         """Search for jobs or fetch a job description from a URL."""
         try:
+            effective_query = query or url or ""
+            if not effective_query:
+                return {"success": False, "error": "Missing required parameter 'query' or 'url' for web search/fetch."}
+
             api_key = os.getenv("TINYFISH_API_KEY")
             if not api_key:
                 return {"success": False, "error": "TINYFISH_API_KEY not configured in .env"}
 
             # Auto-detect: if query is a URL or action is fetch
             if action == "auto":
-                target_url = url or (_is_url(query) and query)
+                target_url = url or (_is_url(effective_query) and effective_query)
                 if target_url:
                     logger.info("web_search.auto_fetch", url=target_url)
                     return self._fetch_url(target_url, api_key)
                 else:
-                    logger.info("web_search.auto_search", query=query)
-                    return self._search_jobs(query, api_key)
+                    logger.info("web_search.auto_search", query=effective_query)
+                    return self._search_jobs(effective_query, api_key)
 
             if action == "fetch":
-                target_url = url or query
+                target_url = url or effective_query
                 return self._fetch_url(target_url, api_key)
             else:
-                return self._search_jobs(query, api_key)
-
+                return self._search_jobs(effective_query, api_key)
         except Exception as e:
             logger.error("web_search.failed", error=str(e))
             return {"success": False, "error": str(e)}

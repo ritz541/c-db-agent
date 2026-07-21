@@ -82,3 +82,10 @@ class TestWebSearchExecute:
             result = tool.execute(db_conn=conn, query="https://acme.com/job", action="fetch")
         assert result["success"] is True
         assert "Job description" in result["content"]
+
+    def test_empty_args_defensive(self, tool, mock_db):
+        conn, cursor = mock_db
+        with patch("tools.web_search.os.getenv", return_value="test-key"):
+            result = tool.execute(db_conn=conn)
+        assert result["success"] is False
+        assert "Missing required parameter" in result["error"]
