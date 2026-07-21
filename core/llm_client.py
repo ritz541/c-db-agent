@@ -1,10 +1,12 @@
 """
 LLM Client Module
 
-Wraps litellm.completion with retry logic and observability.
+Wraps litellm.completion with retry logic, rate limiting, and observability.
 """
 
 import json
+import time
+import threading
 import tenacity
 import sentry_sdk
 import structlog
@@ -15,6 +17,36 @@ import litellm
 logger = structlog.get_logger()
 
 
+class RateLimiter:
+    """Simple token bucket rate limiter for LLM API calls."""
+    
+    def __init__(self, max_requests_per_minute: int = 60):
+        self.max_requests_per_minute = max_requests_per_minute
+        self.requests_this_minute = 0
+        self.minute_start = time.time()
+        self._lock = threading.Lock()
+    
+    def acquire(self):
+        """Block until a request slot is available."""
+        with self._lock:
+            now = time.time()
+            # Reset counter if minute has passed
+            if now - self.minute_start >= 60:
+                self.requests_this_minute = 0
+                self.minute_start = now
+            
+            # If at limit, wait until next minute
+            if self.requests_this_minute >= self.max_requests_per_minute:
+                wait_time = 60 - (now - self.minute_start)
+                if wait_time > 0:
+                    logger.warning("llm.rate_limited", wait_time=wait_time)
+                    time.sleep(wait_time)
+                self.requests_this_minute = 0
+                self.minute_start = time.time()
+            
+            self.requests_this_minute += 1
+
+
 class LLMClient:
     """
     LLM API client with retry logic and observability.
@@ -22,20 +54,23 @@ class LLMClient:
     Encapsulates:
     - API calls to LiteLLM
     - Retry logic via tenacity
+    - Rate limiting via token bucket
     - Sentry spans for tracing
     - Token usage tracking
     """
     
-    def __init__(self, model: str, api_key: str):
+    def __init__(self, model: str, api_key: str, rate_limiter: RateLimiter = None):
         """
         Initialize the LLM client.
         
         Args:
             model: Model name (e.g., "deepseek/deepseek-v4-flash")
             api_key: API key for the model
+            rate_limiter: Optional RateLimiter for throttling calls
         """
         self.model = model
         self.api_key = api_key
+        self.rate_limiter = rate_limiter or RateLimiter()
         logger.info("llm_client.initialized", model=model)
     
     @tenacity.retry(
@@ -59,6 +94,9 @@ class LLMClient:
         Returns:
             dict: LLM response
         """
+        # Apply rate limiting before making the call
+        self.rate_limiter.acquire()
+        
         # Debug: log the last 3 messages to see what we're sending
         for i, msg in enumerate(messages[-3:]):
             role = msg.get("role", "unknown")

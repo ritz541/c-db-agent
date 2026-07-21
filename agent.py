@@ -113,9 +113,14 @@ def main():
     logger.info("tools.loaded", count=len(registry.list_tools()))
     
     # Create LLM client
+    rate_limiter = LLMClient.RateLimiter(
+        max_requests_per_minute=settings.max_requests_per_minute
+    )
+    
     llm_client = LLMClient(
         model=settings.llm_model,
-        api_key=settings.deepseek_api_key
+        api_key=settings.deepseek_api_key,
+        rate_limiter=rate_limiter
     )
     
     # Create and run chat session

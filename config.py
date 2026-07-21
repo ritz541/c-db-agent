@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     # LLM Configuration
     deepseek_api_key: str
     llm_model: str = "deepseek/deepseek-v4-flash"
+    
+    # Rate limiting
+    max_requests_per_minute: int = 60
+    daily_budget_usd: float = 5.0
 
     # Database Configuration
     cockroachdb_url: str
