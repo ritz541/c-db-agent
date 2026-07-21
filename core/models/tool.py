@@ -7,6 +7,11 @@ class ToolMetadata(BaseModel):
     description: str
     category: str = "general"
     capabilities: set[str] = Field(default_factory=set)
+    estimated_cost: str = "low"  # "low", "medium", "high"
+    estimated_latency: str = "fast"  # "fast", "medium", "slow"
+    destructive: bool = False
+    requires_confirmation: bool = False
+    supports_streaming: bool = False
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 

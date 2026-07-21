@@ -89,6 +89,22 @@ class TestDomainModelArchitecture:
         )
         assert "database" in meta.capabilities
         assert "sql" in meta.capabilities
+    def test_tool_metadata_rich_planner_hints(self):
+        meta = ToolMetadata(
+            name="browser",
+            description="Automate browser",
+            capabilities={"browser", "network"},
+            estimated_cost="medium",
+            estimated_latency="slow",
+            destructive=False,
+            requires_confirmation=True,
+            supports_streaming=True,
+        )
+        assert meta.estimated_cost == "medium"
+        assert meta.estimated_latency == "slow"
+        assert meta.requires_confirmation is True
+        assert meta.supports_streaming is True
+
 
     def test_metadata_carrying(self):
         result = ToolResult(
@@ -108,6 +124,11 @@ class TestExecutionContextArchitecture:
         assert ctx.trace_id is not None
         assert ctx.session_id is not None
         assert ctx.run_id is not None
+    def test_cancellation_token(self):
+        ctx = ExecutionContext()
+        assert ctx.cancellation_token.is_cancelled is False
+        ctx.cancellation_token.request_cancellation()
+        assert ctx.cancellation_token.is_cancelled is True
 
 
 class TestStateStoreArchitecture:

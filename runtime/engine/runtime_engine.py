@@ -119,9 +119,19 @@ class RuntimeEngine(RuntimeEngineInterface):
 
         try:
             while turn_count < self.max_turns:
+                if ctx.cancellation_token.is_cancelled:
+                    logger.warning("runtime_engine.cancellation_requested", run_id=ctx.run_id)
+                    await self.services.events.publish(
+                        RuntimeStopped(runtime_id=ctx.run_id, reason="cancelled", context=ctx)
+                    )
+                    return RunResult(
+                        final_output="[Execution cancelled by user]",
+                        turn_count=turn_count,
+                        metadata={"status": "cancelled", "run_id": ctx.run_id},
+                    )
+
                 turn_count += 1
                 logger.info("runtime_engine.turn", turn=turn_count, max_turns=self.max_turns)
-
                 response = await self.services.llm.generate_response(
                     messages=history,
                     tools=tool_metadatas if tool_metadatas else None,

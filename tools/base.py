@@ -6,7 +6,7 @@ from core.models.tool import ToolMetadata, ToolResult
 
 
 class BaseTool(ToolInterface, ABC):
-    """Base class for tools implementing core ToolInterface and supporting capabilities."""
+    """Base class for tools implementing core ToolInterface and supporting rich planner metadata."""
 
     def get_capabilities(self) -> set[str]:
         """Return capability tags (e.g. {'database', 'network', 'filesystem'})."""
@@ -16,6 +16,26 @@ class BaseTool(ToolInterface, ABC):
         """Return tool category."""
         return "general"
 
+    def get_estimated_cost(self) -> str:
+        """Return estimated cost ('low', 'medium', 'high')."""
+        return "low"
+
+    def get_estimated_latency(self) -> str:
+        """Return estimated latency ('fast', 'medium', 'slow')."""
+        return "fast"
+
+    def is_destructive(self) -> bool:
+        """Return True if tool performs destructive operations."""
+        return False
+
+    def requires_confirmation(self) -> bool:
+        """Return True if execution requires human confirmation."""
+        return False
+
+    def supports_streaming(self) -> bool:
+        """Return True if tool supports output streaming."""
+        return False
+
     @property
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
@@ -23,6 +43,11 @@ class BaseTool(ToolInterface, ABC):
             description=self.get_description(),
             category=self.get_category(),
             capabilities=self.get_capabilities(),
+            estimated_cost=self.get_estimated_cost(),
+            estimated_latency=self.get_estimated_latency(),
+            destructive=self.is_destructive(),
+            requires_confirmation=self.requires_confirmation(),
+            supports_streaming=self.supports_streaming(),
             parameters=self.get_parameters(),
         )
 
