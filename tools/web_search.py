@@ -4,6 +4,7 @@ Uses TinyFish API for web search and content extraction.
 """
 
 import os
+import re
 import requests
 import structlog
 from tools.base import BaseTool
@@ -11,8 +12,13 @@ from tools.base import BaseTool
 logger = structlog.get_logger()
 
 
+def _is_url(text: str) -> bool:
+    """Check if text looks like a URL."""
+    return bool(re.match(r'^https?://', text.strip()))
+
+
 class WebSearchTool(BaseTool):
-    """Search the web for jobs and fetch job descriptions."""
+    """Search the web for jobs and fetch their descriptions."""
 
     def get_name(self) -> str:
         return "web_search"
@@ -20,8 +26,8 @@ class WebSearchTool(BaseTool):
     def get_description(self) -> str:
         return (
             "Search the web for job postings and fetch their descriptions. "
-            "Use this to discover jobs by query, then extract the job description "
-            "from a specific URL for use in draft_application."
+            "If you provide a URL, it extracts the content automatically. "
+            "Use search for finding jobs, then fetch to get job descriptions for application drafts."
         )
 
     def get_parameters(self) -> dict:
@@ -30,32 +36,41 @@ class WebSearchTool(BaseTool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query (e.g., 'software engineer remote python')"
+                    "description": "Search query or URL to fetch (e.g., 'software engineer remote' or 'https://company.com/jobs/123')"
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["search", "fetch"],
-                    "description": "Action to perform: 'search' for finding jobs, 'fetch' to get JD from URL"
+                    "enum": ["search", "fetch", "auto"],
+                    "description": "Action: 'auto' detects URL vs search, 'search' for finding, 'fetch' for extracting"
                 },
                 "url": {
                     "type": "string",
                     "description": "URL to fetch (only used when action='fetch')"
                 }
             },
-            "required": ["query", "action"]
+            "required": ["query"]
         }
 
-    def execute(self, db_conn, query: str, action: str = "search", url: str = None) -> dict:
+    def execute(self, db_conn, query: str, action: str = "auto", url: str = None) -> dict:
         """Search for jobs or fetch a job description from a URL."""
         try:
             api_key = os.getenv("TINYFISH_API_KEY")
             if not api_key:
                 return {"success": False, "error": "TINYFISH_API_KEY not configured in .env"}
 
+            # Auto-detect: if query is a URL or action is fetch
+            if action == "auto":
+                target_url = url or (_is_url(query) and query)
+                if target_url:
+                    logger.info("web_search.auto_fetch", url=target_url)
+                    return self._fetch_url(target_url, api_key)
+                else:
+                    logger.info("web_search.auto_search", query=query)
+                    return self._search_jobs(query, api_key)
+
             if action == "fetch":
-                if not url:
-                    return {"success": False, "error": "URL required for fetch action"}
-                return self._fetch_url(url, api_key)
+                target_url = url or query
+                return self._fetch_url(target_url, api_key)
             else:
                 return self._search_jobs(query, api_key)
 

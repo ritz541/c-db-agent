@@ -33,9 +33,25 @@ class TestWebSearchExecute:
     def test_no_api_key(self, tool, mock_db):
         conn, cursor = mock_db
         with patch("tools.web_search.os.getenv", return_value=""):
-            result = tool.execute(db_conn=conn, query="test", action="search")
+            result = tool.execute(db_conn=conn, query="test")
         assert result["success"] is False
         assert "TINYFISH_API_KEY" in result["error"]
+
+    def test_auto_detect_url(self, tool, mock_db):
+        conn, cursor = mock_db
+        with (
+            patch("tools.web_search.os.getenv", return_value="test-key"),
+            patch("tools.web_search.requests.post") as mock_post,
+        ):
+            mock_post.return_value.json.return_value = {
+                "text": "Job description here",
+                "title": "Software Engineer - Acme"
+            }
+            mock_post.return_value.raise_for_status = lambda: None
+            result = tool.execute(db_conn=conn, query="https://acme.com/jobs/123")
+        assert result["success"] is True
+        # Auto-detect should have triggered fetch
+        mock_post.assert_called()
 
     def test_search_success(self, tool, mock_db):
         conn, cursor = mock_db
@@ -63,11 +79,6 @@ class TestWebSearchExecute:
                 "title": "Software Engineer - Acme"
             }
             mock_post.return_value.raise_for_status = lambda: None
-            result = tool.execute(
-                db_conn=conn,
-                query="test",
-                action="fetch",
-                url="https://acme.com/job"
-            )
+            result = tool.execute(db_conn=conn, query="https://acme.com/job", action="fetch")
         assert result["success"] is True
         assert "Job description" in result["content"]
