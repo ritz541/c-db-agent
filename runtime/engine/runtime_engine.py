@@ -15,6 +15,7 @@ from core.events.domain import (
 from core.events.system import RuntimeStarted, RuntimeStopped
 from core.interfaces.runtime import RuntimeEngineInterface
 from core.models.context import ExecutionContext
+from core.models.conversation import ConversationHistory
 from core.models.message import AgentMessage
 from core.models.result import RunResult
 from core.models.tool import ToolCall, ToolResult
@@ -56,24 +57,21 @@ class RuntimeEngine(RuntimeEngineInterface):
             MessageReceived(message=user_message, context=ctx, priority=EventPriority.INFO)
         )
 
-        # Check existing messages from state store or initialize with system prompt
+        # Build conversation history using ConversationHistory helper
+        conversation = ConversationHistory()
+        conversation.add_system(self.system_prompt)
+
+        # Check existing messages from state store
         state_dict = self.services.state_store.get_state()
-        history: list[AgentMessage] = []
-
-        # Add system prompt if not present
-        history.append(AgentMessage(role="system", content=self.system_prompt))
-
-        # Add stored session messages if any
         stored_msgs = state_dict.get("session", {}).get("messages", [])
         for m in stored_msgs:
             if isinstance(m, AgentMessage):
-                history.append(m)
+                conversation.messages.append(m)
             elif isinstance(m, dict):
-                history.append(AgentMessage(**m))
+                conversation.messages.append(AgentMessage(**m))
 
-        # Include prompt user message if not already added
-        if not history or history[-1].content != prompt or history[-1].role != "user":
-            history.append(user_message)
+        if not conversation.messages or conversation.messages[-1].content != prompt or conversation.messages[-1].role != "user":
+            conversation.add_user(prompt)
 
         # Memory search
         if self.services.memory:
@@ -84,7 +82,7 @@ class RuntimeEngine(RuntimeEngineInterface):
                         MemoryRetrieved(query=prompt, items=memories, context=ctx)
                     )
                     mem_context = "\n".join(f"- {m.content}" for m in memories)
-                    history.insert(
+                    conversation.messages.insert(
                         1,
                         AgentMessage(
                             role="system",
@@ -104,7 +102,7 @@ class RuntimeEngine(RuntimeEngineInterface):
             try:
                 plan = await self.services.planner.create_plan(
                     goal=prompt,
-                    history=history,
+                    history=conversation.get_messages(),
                     tools=tool_metadatas,
                     context=ctx,
                 )
@@ -132,19 +130,18 @@ class RuntimeEngine(RuntimeEngineInterface):
 
                 turn_count += 1
                 logger.info("runtime_engine.turn", turn=turn_count, max_turns=self.max_turns)
+
                 response = await self.services.llm.generate_response(
-                    messages=history,
+                    messages=conversation.get_messages(),
                     tools=tool_metadatas if tool_metadatas else None,
                     context=ctx,
                 )
 
                 if response.content or response.tool_calls:
-                    assistant_msg = AgentMessage(
-                        role="assistant",
+                    assistant_msg = conversation.add_assistant(
                         content=response.content or "",
                         tool_calls=response.tool_calls if response.tool_calls else None,
                     )
-                    history.append(assistant_msg)
                     await self.services.events.publish(
                         MessageSent(message=assistant_msg, context=ctx, priority=EventPriority.INFO)
                     )
@@ -207,14 +204,12 @@ class RuntimeEngine(RuntimeEngineInterface):
                             )
                         )
 
-                    # Append tool result to history
-                    tool_output_msg = AgentMessage(
-                        role="tool",
-                        content=tool_result.output or tool_result.error or "",
+                    # Append tool result to conversation using helper
+                    conversation.add_tool(
                         tool_call_id=curr_call.id,
+                        content=tool_result.output or tool_result.error or "",
                         name=curr_call.name,
                     )
-                    history.append(tool_output_msg)
 
             # Reached max turns limit
             await self.services.events.publish(

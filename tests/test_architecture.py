@@ -115,6 +115,22 @@ class TestDomainModelArchitecture:
         )
         assert result.metadata["duration_ms"] == 12.5
         assert result.metadata["provider"] == "local"
+    def test_conversation_history_helper(self):
+        from core.models.conversation import ConversationHistory
+        conv = ConversationHistory()
+        conv.add_system("System instruction")
+        conv.add_user("User query")
+        conv.add_assistant("Assistant thought", tool_calls=[ToolCall(id="call_1", name="calculate", arguments={"expression": "1+1"})])
+        conv.add_tool("call_1", "2", name="calculate")
+
+        msgs = conv.get_messages()
+        assert len(msgs) == 4
+        assert msgs[0].role == "system"
+        assert msgs[1].role == "user"
+        assert msgs[2].role == "assistant"
+        assert msgs[2].tool_calls[0].id == "call_1"
+        assert msgs[3].role == "tool"
+        assert msgs[3].tool_call_id == "call_1"
 
 
 class TestExecutionContextArchitecture:
