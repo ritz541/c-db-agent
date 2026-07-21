@@ -152,7 +152,15 @@ c-db/
 │   ├── registry.py        # Auto-discovery engine
 │   ├── calculator.py      # Math tool
 │   ├── db_tool.py         # Database tool
-│   ├── email_tool.py      # Email tools (6 tools in 1 file!)
+│   ├── email/             # Email tools (modular!)
+│   │   ├── __init__.py    # Shared helpers (LLM, SMTP)
+│   │   ├── store_resume.py
+│   │   ├── list_resumes.py
+│   │   ├── load_resume.py
+│   │   ├── draft_application.py
+│   │   ├── list_applications.py
+│   │   ├── send_email.py
+│   │   └── delete_draft.py
 │   └── weather.py         # Demo plugin (auto-discovered!)
 ├── core/                   # Agent logic
 │   ├── llm_client.py     # LLM API wrapper
@@ -313,7 +321,15 @@ c-db-agent/
 │   ├── registry.py   # Auto-discovery engine
 │   ├── calculator.py # Math evaluation tool
 │   ├── db_tool.py    # SQL query tool
-│   ├── email_tool.py # Email tools (6 tools)
+│   ├── email/        # Email tools (modular, 7 tools)
+│   │   ├── __init__.py    # Shared helpers
+│   │   ├── store_resume.py
+│   │   ├── list_resumes.py
+│   │   ├── load_resume.py
+│   │   ├── draft_application.py
+│   │   ├── list_applications.py
+│   │   ├── send_email.py
+│   │   └── delete_draft.py
 │   └── weather.py    # Demo plugin
 ├── core/              # Agent logic
 │   ├── llm_client.py

@@ -90,7 +90,7 @@ def auto_load_resume(pdf_path: str, conn):
         return
     
     try:
-        from tools.email_tool import load_resume_from_pdf_tool
+        from tools.email.load_resume import load_resume_from_pdf_tool
         
         result = load_resume_from_pdf_tool.execute(
             db_conn=conn,
