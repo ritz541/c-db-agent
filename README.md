@@ -20,6 +20,7 @@ A plugin-based AI agent built with **LiteLLM** and **DeepSeek**, featuring auto-
 | **🗄️ Database Query** | Natural language → SQL. Safety filters block destructive operations. |
 | **📄 Resume Tools** | Store, list, and load resumes from PDF. |
 | **✉️ Email Tools** | Draft tailored cover letters and send via SMTP. |
+| **🌐 Web Search** | Search for job postings or fetch job descriptions from URLs. |
 | **🌤️ Weather** | Demo plugin (auto-discovered!). |
 
 ### Plugin Architecture 🚀
@@ -162,7 +163,8 @@ c-db/
 │   │   ├── list_applications.py
 │   │   ├── send_email.py
 │   │   └── delete_draft.py
-│   └── weather.py         # Demo plugin (auto-discovered!)
+│   ├── weather.py         # Demo plugin (auto-discovered!)
+│   └── web_search.py      # Web search tool
 ├── core/                   # Agent logic
 │   ├── llm_client.py     # LLM API wrapper
 │   ├── chat_session.py    # Chat loop
@@ -331,7 +333,8 @@ c-db-agent/
 │   │   ├── list_applications.py
 │   │   ├── send_email.py
 │   │   └── delete_draft.py
-│   └── weather.py    # Demo plugin
+│   ├── weather.py    # Demo plugin
+│   └── web_search.py # Web search and job fetching
 ├── core/              # Agent logic
 │   ├── llm_client.py
 │   ├── chat_session.py

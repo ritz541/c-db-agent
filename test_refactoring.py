@@ -30,9 +30,9 @@ try:
     
     # Verify all expected tools are present
     expected_tools = [
-        "calculate", "query_database", 
+        "calculate", "query_database",
         "store_resume", "list_resumes", "load_resume_from_pdf",
-        "draft_application", "list_applications", "send_email"
+        "draft_application", "list_applications", "send_email", "web_search"
     ]
     
     missing = [t for t in expected_tools if t not in tools]
