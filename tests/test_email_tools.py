@@ -6,15 +6,13 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.email_tool import (
-    StoreResumeTool,
-    ListResumesTool,
-    LoadResumeFromPdfTool,
-    DraftApplicationTool,
-    ListApplicationsTool,
-    SendEmailTool,
-    DeleteDraftTool,
-)
+from tools.email.store_resume import StoreResumeTool
+from tools.email.list_resumes import ListResumesTool
+from tools.email.load_resume import LoadResumeFromPdfTool
+from tools.email.draft_application import DraftApplicationTool
+from tools.email.list_applications import ListApplicationsTool
+from tools.email.send_email import SendEmailTool
+from tools.email.delete_draft import DeleteDraftTool
 
 
 # ── StoreResumeTool ──────────────────────────────────────────────────
@@ -93,7 +91,7 @@ class TestLoadResumeFromPdf:
 
     def test_file_not_found(self, tool, mock_db):
         conn, cursor = mock_db
-        with patch("tools.email_tool.os.path.isfile", return_value=False):
+        with patch("tools.email.load_resume.os.path.isfile", return_value=False):
             result = tool.execute(db_conn=conn, pdf_path="/nonexistent/resume.pdf")
         assert result["success"] is False
         assert "not found" in result["error"].lower()
@@ -104,8 +102,8 @@ class TestLoadResumeFromPdf:
         mock_reader.pages = [MagicMock()]
         mock_reader.pages[0].extract_text.return_value = ""
         with (
-            patch("tools.email_tool.os.path.isfile", return_value=True),
-            patch("tools.email_tool.PdfReader", return_value=mock_reader),
+            patch("tools.email.load_resume.os.path.isfile", return_value=True),
+            patch("tools.email.load_resume.PdfReader", return_value=mock_reader),
         ):
             result = tool.execute(db_conn=conn, pdf_path="/fake/resume.pdf")
         assert result["success"] is False
@@ -117,8 +115,8 @@ class TestLoadResumeFromPdf:
         mock_reader.pages = [MagicMock()]
         mock_reader.pages[0].extract_text.return_value = "Resume content here"
         with (
-            patch("tools.email_tool.os.path.isfile", return_value=True),
-            patch("tools.email_tool.PdfReader", return_value=mock_reader),
+            patch("tools.email.load_resume.os.path.isfile", return_value=True),
+            patch("tools.email.load_resume.PdfReader", return_value=mock_reader),
         ):
             result = tool.execute(db_conn=conn, pdf_path="/fake/resume.pdf")
         assert result["success"] is True
@@ -154,7 +152,7 @@ class TestDraftApplication:
             ("My resume text",),
             (1,),
         ]
-        with patch("tools.email_tool._call_llm", return_value="Dear Hiring Manager,\nI am interested..."):
+        with patch("tools.email.draft_application._call_llm", return_value="Dear Hiring Manager,\nI am interested..."):
             result = tool.execute(
                 db_conn=conn, company="Acme", role_title="Dev",
                 recipient_email="hr@acme.com", job_description="Build stuff"
@@ -243,8 +241,8 @@ class TestSendEmail:
             "SMTP_PORT": "587",
         }
         with (
-            patch("tools.email_tool.smtplib.SMTP") as mock_smtp,
-            patch("tools.email_tool.os.path.isfile", return_value=False),
+            patch("tools.email.send_email.smtplib.SMTP") as mock_smtp,
+            patch("tools.email.send_email.os.path.isfile", return_value=False),
             patch.dict(os.environ, env),
         ):
             result = tool.execute(db_conn=conn, application_id=1)

@@ -21,3 +21,5 @@ pytest>=8.0.0
 rich>=15.0.0
 # sqlglot — SQL parsing and AST validation for security
 sqlglot>=25.0.0
+# pypdf — PDF text extraction for resume parsing
+pypdf>=3.0.0

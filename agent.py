@@ -89,7 +89,7 @@ def main():
         if pdf_path and os.path.isfile(pdf_path):
             conn = get_connection()
             try:
-                from tools.email_tool import load_resume_from_pdf_tool
+                from tools.email.load_resume import load_resume_from_pdf_tool
                 result = load_resume_from_pdf_tool.execute(
                     db_conn=conn,
                     pdf_path=pdf_path

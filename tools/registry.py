@@ -49,6 +49,7 @@ class ToolRegistry:
         
         This finds all classes that inherit from BaseTool, instantiates them,
         and registers them. No manual registration needed.
+        Also discovers tools in subdirectories (e.g., tools/email/).
         """
         if self._discovered:
             logger.warning("registry.already_discovered")
@@ -59,37 +60,57 @@ class ToolRegistry:
         
         discovered_count = 0
         
+        # Discover top-level modules
         for importer, modname, ispkg in pkgutil.iter_modules([str(tools_dir)]):
-            # Skip private modules and this file itself
-            if modname.startswith('_') or modname == 'base' or modname == 'registry':
+            # Skip private modules and core modules
+            if modname.startswith('_') or modname in ('base', 'registry'):
                 continue
             
-            try:
-                # Import the module
-                module_name = f"tools.{modname}"
-                module = importlib.import_module(module_name)
-                
-                # Find all BaseTool subclasses in the module
-                for attr_name in dir(module):
-                    attr = getattr(module, attr_name)
-                    
-                    # Check if it's a class, is a subclass of BaseTool, but not BaseTool itself
-                    if (isinstance(attr, type) and 
-                        issubclass(attr, BaseTool) and 
-                        attr != BaseTool):
-                        
-                        # Instantiate the tool
-                        tool_instance = attr()
-                        
-                        # Register it
-                        self.register(tool_instance)
-                        discovered_count += 1
-                        
-            except Exception as e:
-                logger.error("registry.module_failed", module=modname, error=str(e))
+            # Import and process the module
+            discovered_count = self._discover_module(modname, discovered_count)
+        
+        # Discover tools in subdirectories (packages)
+        for submodule in tools_dir.iterdir():
+            if submodule.is_dir() and (submodule / "__init__.py").exists():
+                submodname = submodule.name
+                for importer, modname, ispkg in pkgutil.iter_modules([str(submodule)]):
+                    full_modname = f"tools.{submodname}.{modname}"
+                    discovered_count = self._discover_module_direct(full_modname, discovered_count)
         
         self._discovered = True
         logger.info("registry.discovery_complete", tools_discovered=discovered_count)
+    
+    def _discover_module(self, modname: str, discovered_count: int) -> int:
+        """Discover tools in a module."""
+        try:
+            module = importlib.import_module(f"tools.{modname}")
+            return self._find_and_register_tools(module, discovered_count)
+        except Exception as e:
+            logger.error("registry.module_failed", module=modname, error=str(e))
+            return discovered_count
+    
+    def _discover_module_direct(self, modname: str, discovered_count: int) -> int:
+        """Discover tools in a submodule (handles subdirectory modules)."""
+        try:
+            module = importlib.import_module(modname)
+            return self._find_and_register_tools(module, discovered_count)
+        except Exception as e:
+            logger.error("registry.module_failed", module=modname, error=str(e))
+            return discovered_count
+    
+    def _find_and_register_tools(self, module, discovered_count: int) -> int:
+        """Find all BaseTool subclasses in a module and register them."""
+        for attr_name in dir(module):
+            attr = getattr(module, attr_name)
+            if (isinstance(attr, type) and 
+                issubclass(attr, BaseTool) and 
+                attr != BaseTool):
+                # Only register tools defined in THIS module (not imported ones)
+                if getattr(attr, "__module__", "").startswith(module.__name__):
+                    tool_instance = attr()
+                    self.register(tool_instance)
+                    discovered_count += 1
+        return discovered_count
     
     def register(self, tool: BaseTool):
         """
