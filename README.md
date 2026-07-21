@@ -10,6 +10,7 @@ A plugin-based AI agent built with **LiteLLM** and **DeepSeek**, featuring auto-
 - **Database query** — Natural language → SQL with safety filters (blocks DROP/TRUNCATE/DELETE)
 - **Email tools** — Store resumes, draft cover letters, send via SMTP
 - **Sentry observability** — Error tracking and performance monitoring built-in
+- **Intermediate responses** — See LLM thinking before tool execution (not buried in logs)
 
 ### Current Tools
 

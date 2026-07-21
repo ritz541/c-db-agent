@@ -43,26 +43,29 @@ class ChatSession:
     def process_user_input(self, user_input: str) -> str:
         """
         Process one user message (handles multi-turn tool calls).
-        
+
         Args:
             user_input: User's message
-        
+
         Returns:
             str: Agent's final response
         """
         import uuid
         import sentry_sdk
-        
+        from rich.markdown import Markdown
+        from rich.console import Console
+        console = Console()
+
         # Generate request ID for tracing
         request_id = uuid.uuid4().hex[:8]
-        
+
         # Wrap each user interaction in a Sentry transaction
         with sentry_sdk.start_transaction(op="agent_run", name="user_message") as transaction:
             transaction.set_tag("request_id", request_id)
-            
+
             # Add user message to history
             self.messages.append({"role": "user", "content": user_input})
-            
+
             # Send to LLM
             try:
                 response = self.llm.complete(
@@ -75,18 +78,22 @@ class ChatSession:
                 print("   API Error: Check logs for details")
                 self.messages.pop()  # Remove the user message that caused the failure
                 return None
-            
+
             # Process the response (handle multiple rounds of tool calls)
             while True:
                 response_message = response.choices[0].message
-                
+                logger.info("tool_calls.detected", count=len(response_message.tool_calls) if response_message.tool_calls else 0)
+
                 # If no tool calls, this is the final text response
                 if not response_message.tool_calls:
                     self.messages.append(response_message)
                     return response_message.content
-                
-                # LLM wants to call tools - process them
-                logger.info("tool_calls.detected", count=len(response_message.tool_calls))
+
+                # LLM wants to call tools - print any intermediate content first
+                if response_message.content:
+                    print()  # blank line before intermediate response
+                    console.print(Markdown(response_message.content))
+                    print()
                 self.messages.append(response_message)
                 
                 # Process each tool call
@@ -98,7 +105,6 @@ class ChatSession:
                         args = {}
                     
                     # Execute the tool
-                    import psycopg2
                     from infrastructure.db_pool import get_connection, return_connection
                     
                     conn = get_connection()
