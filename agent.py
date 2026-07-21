@@ -37,7 +37,7 @@ from infrastructure.db_pool import init_db_pool, get_connection, return_connecti
 from tools.registry import registry
 
 # Import core modules
-from core.llm_client import LLMClient
+from core.llm_client import LLMClient, RateLimiter
 from core.chat_session import ChatSession
 from core.prompts import get_system_prompt
 
@@ -113,9 +113,7 @@ def main():
     logger.info("tools.loaded", count=len(registry.list_tools()))
     
     # Create LLM client
-    rate_limiter = LLMClient.RateLimiter(
-        max_requests_per_minute=settings.max_requests_per_minute
-    )
+    rate_limiter = RateLimiter(max_requests_per_minute=settings.max_requests_per_minute)
     
     llm_client = LLMClient(
         model=settings.llm_model,
