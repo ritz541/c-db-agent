@@ -5,7 +5,7 @@ from rich.console import Console
 
 from agent.builder import Agent
 from config.settings import get_settings
-from infrastructure.db_pool import get_db_pool
+from infrastructure.db_pool import init_db_pool, get_connection, is_db_available
 from runtime.middleware.logging import LoggingMiddleware
 from runtime.middleware.timing import TimingMiddleware
 from subscribers.console import ConsoleSubscriber
@@ -35,8 +35,12 @@ class CLIRunner:
 
         # Initialize DB pool
         try:
-            db_pool = get_db_pool()
-            db_pool.get_connection()
+            if self.settings.cockroachdb_url:
+                init_db_pool(
+                    db_url=self.settings.cockroachdb_url,
+                    minconn=self.settings.db_pool_minconn,
+                    maxconn=self.settings.db_pool_maxconn,
+                )
         except Exception as e:
             logger.warning("cli_runner.db_conn_warning", error=str(e))
 
