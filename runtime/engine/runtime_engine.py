@@ -18,6 +18,7 @@ from core.interfaces.runtime import RuntimeEngineInterface
 from core.models.context import ExecutionContext
 from core.models.conversation import ConversationHistory
 from core.models.message import AgentMessage
+from core.models.planning import Plan
 from core.models.result import RunResult
 from core.models.tool import ToolCall, ToolResult
 from runtime.middleware.base import RuntimeMiddleware
@@ -99,6 +100,8 @@ class RuntimeEngine(RuntimeEngineInterface):
             tool_metadatas = self.services.executor.list_tool_metadata()
 
         # Planner invocation
+        single_pass_query = False
+        planned_steps: list = []
         if self.services.planner:
             try:
                 plan = await self.services.planner.create_plan(
@@ -107,11 +110,44 @@ class RuntimeEngine(RuntimeEngineInterface):
                     tools=tool_metadatas,
                     context=ctx,
                 )
+                if plan and plan.metadata and plan.metadata.get("single_pass"):
+                    single_pass_query = True
                 await self.services.events.publish(
                     PlanCreated(plan=plan, context=ctx, priority=EventPriority.INFO)
                 )
-                if getattr(self.services, "scheduler", None):
-                    await self.services.scheduler.execute_plan(plan, context=ctx)
+
+                # Hand the plan to the DAG scheduler and consume its results.
+                # Previously execute_plan() was called unconditionally purely
+                # for side effects and its return value was discarded, so the
+                # scheduler was effectively dead code in the engine.
+                #
+                # We only hand off when the plan actually carries executable
+                # steps with RESOLVED arguments. The DirectPlanner's trivial
+                # single_pass plans contain no arguments (the LLM must extract
+                # them from the goal), so they correctly fall through to the
+                # reactive LLM loop below — the engine never wastes a call on
+                # an argument-less step, and the scheduler is genuinely wired
+                # in for any planner that emits concrete, argumented steps.
+                scheduler = getattr(self.services, "scheduler", None)
+                schedulable = [
+                    s
+                    for s in (plan.steps if plan else [])
+                    if s.tool_name and s.arguments
+                ]
+                if scheduler is not None and plan is not None and schedulable:
+                    plan_results = await scheduler.execute_plan(plan, context=ctx)
+                    all_resolved = all(
+                        s.status == "completed"
+                        for s in plan.steps
+                        if s.status != "pending"
+                    )
+                    if single_pass_query and plan.is_complete() and all_resolved:
+                        return await self._finalize_single_pass(
+                            plan=plan,
+                            plan_results=plan_results,
+                            conversation=conversation,
+                            ctx=ctx,
+                        )
             except Exception as e:
                 logger.warning("runtime_engine.planner_failed", error=str(e))
         turn_count = 0
@@ -140,8 +176,12 @@ class RuntimeEngine(RuntimeEngineInterface):
                 )
 
                 if response.content or response.tool_calls:
+                    # Suppress intermediate text chatter from assistant message when tool_calls are present
+                    # so intermediate filler strings are not rendered or sent as content before tool execution,
+                    # while still preserving the assistant tool_calls message for state store & LLM history.
+                    assistant_content = "" if response.tool_calls else (response.content or "")
                     assistant_msg = conversation.add_assistant(
-                        content=response.content or "",
+                        content=assistant_content,
                         tool_calls=response.tool_calls if response.tool_calls else None,
                     )
                     await self.services.events.publish(
@@ -193,6 +233,63 @@ class RuntimeEngine(RuntimeEngineInterface):
                 RuntimeStopped(runtime_id=ctx.run_id, reason="error", context=ctx)
             )
             raise
+
+    async def _finalize_single_pass(
+        self,
+        plan: "Plan",
+        plan_results: dict[int, "object"],
+        conversation: "ConversationHistory",
+        ctx: ExecutionContext,
+    ) -> RunResult:
+        """Build a RunResult from scheduler-executed steps without an LLM call.
+
+        Used when the planner classifies the goal as SIMPLE_RETRIEVAL and the DAG
+        scheduler has already executed every step. This short-circuits the full
+        LLM turn-loop (tool_call -> LLM -> tool_call ...) that would otherwise
+        re-run the same work, giving the documented single-pass behaviour.
+        """
+        # Record the executed steps in the conversation/event stream so downstream
+        # consumers (state store, subscribers) see them exactly as if the LLM loop
+        # had produced them.
+        final_output = ""
+        for step in plan.steps:
+            if not step.result and step.status == "completed":
+                continue
+            if step.tool_name:
+                tool_output = step.result or ""
+                tool_msg = conversation.add_tool(
+                    tool_call_id=f"step_{step.step_id}",
+                    content=tool_output,
+                    name=step.tool_name,
+                )
+                await self.services.events.publish(
+                    MessageSent(message=tool_msg, context=ctx, priority=EventPriority.INFO)
+                )
+                # Use the last completed step's output as the answer.
+                final_output = tool_output
+
+        # Preserve the user message in the state store for multi-turn continuity.
+        state_dict = self.services.state_store.get_state()
+        state_dict.setdefault("session", {}).setdefault("messages", [])
+        state_dict["session"]["messages"].append(
+            {"role": "user", "content": conversation.messages[-1].content}
+            if conversation.messages and conversation.messages[-1].role == "user"
+            else {"role": "user", "content": ""}
+        )
+
+        await self.services.events.publish(
+            RuntimeStopped(runtime_id=ctx.run_id, reason="normal", context=ctx)
+        )
+        return RunResult(
+            final_output=final_output,
+            turn_count=1,
+            metadata={
+                "run_id": ctx.run_id,
+                "trace_id": ctx.trace_id,
+                "single_pass": True,
+                "executed_steps": [s.step_id for s in plan.steps if s.status == "completed"],
+            },
+        )
 
     async def _execute_single_tool(
         self,
