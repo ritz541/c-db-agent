@@ -1,3 +1,4 @@
+import asyncio
 import structlog
 from typing import Any
 
@@ -109,9 +110,10 @@ class RuntimeEngine(RuntimeEngineInterface):
                 await self.services.events.publish(
                     PlanCreated(plan=plan, context=ctx, priority=EventPriority.INFO)
                 )
+                if getattr(self.services, "scheduler", None):
+                    await self.services.scheduler.execute_plan(plan, context=ctx)
             except Exception as e:
                 logger.warning("runtime_engine.planner_failed", error=str(e))
-
         turn_count = 0
         final_output = ""
 
@@ -159,59 +161,23 @@ class RuntimeEngine(RuntimeEngineInterface):
                         metadata={"run_id": ctx.run_id, "trace_id": ctx.trace_id},
                     )
 
-                # Tool Calls Execution Loop
-                for tool_call in response.tool_calls:
-                    curr_call: ToolCall | None = tool_call
-
-                    # Pre-execution Middleware pipeline
-                    for mw in self.middleware:
-                        if curr_call is not None:
-                            curr_call = await mw.before_tool_execute(curr_call, context=ctx)
-
-                    if curr_call is None:
-                        logger.warning("runtime_engine.tool_call_cancelled_by_middleware", tool=tool_call.name)
-                        continue
-
-                    await self.services.events.publish(
-                        ToolStarted(tool_call=curr_call, context=ctx, priority=EventPriority.INFO)
+                # Parallel Tool Calls Execution with Deterministic Message Ordering
+                if response.tool_calls:
+                    tool_results = await asyncio.gather(
+                        *[self._execute_single_tool(tc, ctx) for tc in response.tool_calls]
                     )
 
-                    # Execute tool call
-                    if self.services.executor:
-                        tool_result = await self.services.executor.execute_tool(curr_call, context=ctx)
-                    else:
-                        tool_result = ToolResult(
-                            tool_call_id=curr_call.id,
-                            success=False,
-                            output="",
-                            error="No executor configured in services",
-                        )
-
-                    # Post-execution Middleware pipeline
-                    for mw in self.middleware:
-                        tool_result = await mw.after_tool_execute(curr_call, tool_result, context=ctx)
-
-                    if tool_result.success:
-                        await self.services.events.publish(
-                            ToolFinished(tool_call=curr_call, result=tool_result, context=ctx)
-                        )
-                    else:
-                        await self.services.events.publish(
-                            ToolFailed(
-                                tool_call=curr_call,
-                                error=tool_result.error or "Execution failed",
-                                context=ctx,
+                    # Append tool results in original order of response.tool_calls
+                    for orig_tc, (curr_call, tool_result) in zip(response.tool_calls, tool_results):
+                        if curr_call is not None and tool_result is not None:
+                            tool_msg = conversation.add_tool(
+                                tool_call_id=curr_call.id,
+                                content=tool_result.output or tool_result.error or "",
+                                name=curr_call.name,
                             )
-                        )
-
-                    # Append tool result to conversation using helper
-                    conversation.add_tool(
-                        tool_call_id=curr_call.id,
-                        content=tool_result.output or tool_result.error or "",
-                        name=curr_call.name,
-                    )
-
-            # Reached max turns limit
+                            await self.services.events.publish(
+                                MessageSent(message=tool_msg, context=ctx, priority=EventPriority.INFO)
+                            )
             await self.services.events.publish(
                 RuntimeStopped(runtime_id=ctx.run_id, reason="max_turns_exceeded", context=ctx)
             )
@@ -227,3 +193,61 @@ class RuntimeEngine(RuntimeEngineInterface):
                 RuntimeStopped(runtime_id=ctx.run_id, reason="error", context=ctx)
             )
             raise
+
+    async def _execute_single_tool(
+        self,
+        tool_call: ToolCall,
+        ctx: ExecutionContext,
+    ) -> tuple[ToolCall | None, ToolResult]:
+        curr_call: ToolCall | None = tool_call
+
+        # Pre-execution Middleware pipeline
+        for mw in self.middleware:
+            if curr_call is not None:
+                curr_call = await mw.before_tool_execute(curr_call, context=ctx)
+
+        if curr_call is None:
+            logger.warning("runtime_engine.tool_call_cancelled_by_middleware", tool=tool_call.name)
+            return (
+                None,
+                ToolResult(
+                    tool_call_id=tool_call.id,
+                    success=False,
+                    output="",
+                    error="Tool call cancelled by middleware",
+                ),
+            )
+
+        await self.services.events.publish(
+            ToolStarted(tool_call=curr_call, context=ctx, priority=EventPriority.INFO)
+        )
+
+        # Execute tool call
+        if self.services.executor:
+            tool_result = await self.services.executor.execute_tool(curr_call, context=ctx)
+        else:
+            tool_result = ToolResult(
+                tool_call_id=curr_call.id,
+                success=False,
+                output="",
+                error="No executor configured in services",
+            )
+
+        # Post-execution Middleware pipeline
+        for mw in self.middleware:
+            tool_result = await mw.after_tool_execute(curr_call, tool_result, context=ctx)
+
+        if tool_result.success:
+            await self.services.events.publish(
+                ToolFinished(tool_call=curr_call, result=tool_result, context=ctx)
+            )
+        else:
+            await self.services.events.publish(
+                ToolFailed(
+                    tool_call=curr_call,
+                    error=tool_result.error or "Execution failed",
+                    context=ctx,
+                )
+            )
+
+        return (curr_call, tool_result)

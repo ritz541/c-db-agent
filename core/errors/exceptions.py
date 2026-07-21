@@ -50,3 +50,8 @@ class MiddlewareError(AgentError):
     """Raised when a middleware execution fails."""
 
     pass
+
+class SchedulerError(AgentError):
+    """Raised when DAG plan scheduling or execution fails."""
+
+    pass

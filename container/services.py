@@ -5,6 +5,7 @@ from core.interfaces.executor import ExecutorInterface
 from core.interfaces.llm import LLMProviderInterface
 from core.interfaces.memory import MemoryProviderInterface
 from core.interfaces.planner import PlannerInterface
+from core.interfaces.scheduler import DAGSchedulerInterface
 from core.interfaces.state_store import StateStoreInterface
 from core.interfaces.task_manager import TaskManagerInterface
 
@@ -19,4 +20,5 @@ class RuntimeServices(BaseModel):
     memory: MemoryProviderInterface | Any = None
     planner: PlannerInterface | Any = None
     executor: ExecutorInterface | Any = None
+    scheduler: DAGSchedulerInterface | Any = None
     config: dict[str, Any] = Field(default_factory=dict)

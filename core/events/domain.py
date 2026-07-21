@@ -2,7 +2,7 @@ from typing import Any
 from core.events.base import Event
 from core.models.memory import MemoryItem
 from core.models.message import AgentMessage
-from core.models.planning import Plan
+from core.models.planning import Plan, PlanStep
 from core.models.tool import ToolCall, ToolResult
 
 
@@ -43,3 +43,25 @@ class MemoryStored(DomainEvent):
 class MemoryRetrieved(DomainEvent):
     query: str
     items: list[MemoryItem]
+
+class StepScheduled(DomainEvent):
+    step: PlanStep
+
+
+class StepStarted(DomainEvent):
+    step: PlanStep
+
+
+class StepFinished(DomainEvent):
+    step: PlanStep
+    result: ToolResult | Any = None
+
+
+class StepFailed(DomainEvent):
+    step: PlanStep
+    error: str
+
+
+class StepCancelled(DomainEvent):
+    step: PlanStep
+    reason: str

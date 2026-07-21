@@ -8,6 +8,7 @@ from core.interfaces.memory import MemoryProviderInterface
 from core.interfaces.planner import PlannerInterface
 from core.interfaces.state_store import StateStoreInterface
 from core.interfaces.task_manager import TaskManagerInterface
+from core.interfaces.scheduler import DAGSchedulerInterface
 from core.interfaces.tool import ToolInterface
 from core.models.context import ExecutionContext
 from core.models.result import RunResult
@@ -20,6 +21,7 @@ from runtime.middleware.base import RuntimeMiddleware
 from runtime.planning.direct_planner import DirectPlanner
 from runtime.state.store import StateStore
 from runtime.tasks.task_manager import TaskManager
+from runtime.scheduler.dag_scheduler import DAGScheduler
 
 
 class AgentBuilder:
@@ -33,6 +35,7 @@ class AgentBuilder:
         self._event_bus: EventBusInterface | None = None
         self._state_store: StateStoreInterface | None = None
         self._task_manager: TaskManagerInterface | None = None
+        self._scheduler: DAGSchedulerInterface | None = None
         self._middleware: list[RuntimeMiddleware] = []
         self._subscribers: list[BaseSubscriber] = []
         self._tools: list[ToolInterface] = []
@@ -69,6 +72,10 @@ class AgentBuilder:
 
     def with_task_manager(self, task_manager: TaskManagerInterface) -> "AgentBuilder":
         self._task_manager = task_manager
+        return self
+
+    def with_scheduler(self, scheduler: DAGSchedulerInterface) -> "AgentBuilder":
+        self._scheduler = scheduler
         return self
 
     def with_middleware(self, middleware: RuntimeMiddleware) -> "AgentBuilder":
@@ -121,8 +128,12 @@ class AgentBuilder:
             memory=self._memory,
             planner=planner,
             executor=executor,
+            scheduler=self._scheduler,
             config=self._config,
         )
+
+        if services.scheduler is None:
+            services.scheduler = DAGScheduler(services=services)
 
         engine = RuntimeEngine(
             services=services,
