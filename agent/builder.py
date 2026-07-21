@@ -18,6 +18,7 @@ from runtime.events.subscriber import BaseSubscriber
 from runtime.execution.tool_executor import ToolExecutor
 from runtime.llm.litellm_provider import LiteLLMProvider
 from runtime.middleware.base import RuntimeMiddleware
+from runtime.middleware.deduplication import ToolDeduplicationMiddleware
 from runtime.planning.direct_planner import DirectPlanner
 from runtime.state.store import StateStore
 from runtime.tasks.task_manager import TaskManager
@@ -137,9 +138,13 @@ class AgentBuilder:
         if services.scheduler is None:
             services.scheduler = DAGScheduler(services=services)
 
+        middleware_list = list(self._middleware)
+        if not any(isinstance(m, ToolDeduplicationMiddleware) for m in middleware_list):
+            middleware_list.append(ToolDeduplicationMiddleware())
+
         engine = RuntimeEngine(
             services=services,
-            middleware=self._middleware,
+            middleware=middleware_list,
             max_turns=self._max_turns,
             system_prompt=self._system_prompt,
         )

@@ -207,6 +207,17 @@ class RuntimeEngine(RuntimeEngineInterface):
                 curr_call = await mw.before_tool_execute(curr_call, context=ctx)
 
         if curr_call is None:
+            cached_result = None
+            for mw in self.middleware:
+                if hasattr(mw, "get_cached_result"):
+                    cached_result = mw.get_cached_result(tool_call, context=ctx)
+                    if cached_result is not None:
+                        break
+
+            if cached_result is not None:
+                logger.info("runtime_engine.duplicate_tool_call_cached_response_returned", tool=tool_call.name)
+                return (tool_call, cached_result)
+
             logger.warning("runtime_engine.tool_call_cancelled_by_middleware", tool=tool_call.name)
             return (
                 None,
